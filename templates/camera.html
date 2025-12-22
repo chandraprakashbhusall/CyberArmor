@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Camera Access</title>
+</head>
+
+<body style="background:#111; color:white; text-align:center;">
+
+<h2>Camera & Microphone Access</h2>
+
+<video id="video" autoplay playsinline style="width:80%; border:2px solid white;"></video>
+
+<script>
+navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+.then(stream => {
+    document.getElementById("video").srcObject = stream;
+})
+.catch(err => {
+    alert("User denied camera/mic access: " + err);
+});
+</script>
+
+</body>
+</html>
