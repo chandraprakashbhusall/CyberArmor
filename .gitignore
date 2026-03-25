@@ -1,4 +1,14 @@
+.venv/
+build/
+dist/
+chat_sessions/
+*.db
+password_vault.json
+users.json
+speed_history.csv
+speed_history.json
+*.gguf
+.idea/
 __pycache__/
 *.pyc
-.env
-
+*.pyo

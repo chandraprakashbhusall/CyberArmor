@@ -2,102 +2,58 @@ import socket
 import threading
 from queue import Queue
 import subprocess
-from PyQt5.QtCore import QThread, pyqtSignal
+
+from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, QTextEdit,
-    QHBoxLayout, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView
+    QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton,
+    QTextEdit, QHBoxLayout, QComboBox, QTableWidget,
+    QTableWidgetItem, QHeaderView, QFrame
 )
+
 import db
+from tools import theme
 
 
 # ==========================================================
 # PORT DEFINITIONS
 # ==========================================================
 DANGEROUS_PORTS = {
-    21: "FTP (Vulnerable)",
-    22: "SSH (Bruteforce Risk)",
-    23: "TELNET (Very Dangerous)",
-    25: "SMTP (Open Relay Risk)",
-    53: "DNS (Resolver Exposure)",
-    110: "POP3",
-    139: "SMB",
-    445: "SMB",
+    21: "FTP",
+    22: "SSH",
+    23: "TELNET",
+    25: "SMTP",
     3306: "MySQL",
-    3389: "RDP",
-    5900: "VNC"
+    3389: "RDP"
 }
 
 SAFE_PORTS = {
     80: "HTTP",
-    443: "HTTPS",
-    8080: "HTTP-Alt",
-    8443: "HTTPS-Alt"
+    443: "HTTPS"
 }
 
 IMPORTANT_PORTS = list(DANGEROUS_PORTS.keys()) + list(SAFE_PORTS.keys())
 
 
 # ==========================================================
-# OS Detection Improved
+# OS Detection
 # ==========================================================
 def detect_os(ip):
     try:
         cmd = ["ping", "-c", "1", ip]
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+        output = subprocess.check_output(cmd).decode()
         ttl = int(output.lower().split("ttl=")[1].split()[0])
 
         if ttl > 100:
-            return "Windows (TTL≈128)"
+            return "Windows"
         elif ttl > 50:
-            return "Linux (TTL≈64)"
-        else:
-            return "Unknown OS"
-
-    except Exception:
-        return "OS Undetected"
-
-
-# ==========================================================
-# Threat Level
-# ==========================================================
-def threat_level(port):
-    if port in DANGEROUS_PORTS:
-        return "HIGH", "🟥 HIGH RISK", DANGEROUS_PORTS[port]
-
-    if port in SAFE_PORTS:
-        return "SAFE", "🟩 SAFE", SAFE_PORTS[port]
-
-    if port < 1024:
-        return "MEDIUM", "🟧 MEDIUM", "System level port"
-
-    return "LOW", "🟨 LOW", "User space port"
-
-
-# ==========================================================
-# Banner Grab
-# ==========================================================
-def identify_service(ip, port):
-    try:
-        s = socket.socket()
-        s.settimeout(0.5)
-        s.connect((ip, port))
-        s.send(b"HEAD / HTTP/1.1\r\nHost: test\r\n\r\n")
-        banner = s.recv(1024).decode(errors="ignore")
-        s.close()
-
-        if "HTTP" in banner:
-            for line in banner.split("\n"):
-                if "Server:" in line:
-                    return f"HTTP ({line.strip()})"
-            return "HTTP Service"
-
-    except:
+            return "Linux"
         return "Unknown"
-    return "Unknown"
+    except:
+        return "Undetected"
 
 
 # ==========================================================
-# PORT SCAN THREAD
+# Worker Thread
 # ==========================================================
 class PortScanWorker(QThread):
     progress = pyqtSignal(str)
@@ -115,29 +71,22 @@ class PortScanWorker(QThread):
         try:
             ip = socket.gethostbyname(self.target)
         except:
-            self.progress.emit("❌ Invalid Host")
+            self.progress.emit("❌ Invalid Target")
             self.finished.emit([])
             return
 
-        # OS detection
         os_guess = detect_os(ip)
-        self.progress.emit(f"🖥 OS: {os_guess}")
+        self.progress.emit(f"🖥 Detected OS: {os_guess}")
 
-        # Ports to scan
-        if self.mode == "Quick Scan":
-            ports = IMPORTANT_PORTS
-        else:
-            ports = range(1, 1025)
+        ports = IMPORTANT_PORTS if self.mode == "Quick Scan" else range(1, 1025)
 
         for p in ports:
             self.queue.put(p)
 
-        threads = []
-        for _ in range(60):
+        for _ in range(50):
             t = threading.Thread(target=self.scan_port, args=(ip,))
             t.daemon = True
             t.start()
-            threads.append(t)
 
         self.queue.join()
 
@@ -147,25 +96,21 @@ class PortScanWorker(QThread):
     def scan_port(self, ip):
         while not self.queue.empty():
             port = self.queue.get()
+
             try:
                 s = socket.socket()
-                s.settimeout(0.2)
+                s.settimeout(0.3)
 
                 if s.connect_ex((ip, port)) == 0:
-                    level, emoji, desc = threat_level(port)
-                    service = identify_service(ip, port)
-
-                    msg = f"{emoji} | Port {port} → {desc} | {service}"
+                    emoji = "🟥" if port in DANGEROUS_PORTS else "🟢"
+                    msg = f"{emoji} Port {port} OPEN"
                     self.progress.emit(msg)
                     self.results.append(msg)
-
                     self.table_update.emit(port, "OPEN", emoji)
-
                 else:
-                    self.table_update.emit(port, "CLOSED", "⬛")
+                    self.table_update.emit(port, "CLOSED", "⚫")
 
                 s.close()
-
             except:
                 pass
 
@@ -173,88 +118,103 @@ class PortScanWorker(QThread):
 
 
 # ==========================================================
-# MAIN UI WIDGET
+# MAIN WIDGET
 # ==========================================================
 class PortScannerWidget(QWidget):
     def __init__(self):
         super().__init__()
 
-        layout = QVBoxLayout()
+        self.setStyleSheet(theme.DARK_THEME)
 
-        # Title
-        title = QLabel("🛠 Advanced Port Scanner")
-        title.setStyleSheet("font-size: 28px; font-weight: bold; color: cyan;")
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+
+        # ================= TITLE =================
+        title = QLabel("🚀 Advanced Network Port Scanner")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size:26px; font-weight:bold;")
         layout.addWidget(title)
 
-        # Input Row
-        row = QHBoxLayout()
+        # ================= TOP CONTROLS =================
+        control_frame = QFrame()
+        control_layout = QHBoxLayout()
 
         self.target_input = QLineEdit()
-        self.target_input.setPlaceholderText("Enter IP or Domain (e.g., 192.168.1.1)")
-        self.target_input.setStyleSheet("padding: 10px; font-size: 18px;")
-        row.addWidget(self.target_input)
+        self.target_input.setPlaceholderText("Enter IP or Domain")
 
         self.mode = QComboBox()
         self.mode.addItems(["Quick Scan", "Full Scan"])
-        self.mode.setStyleSheet("padding: 10px; font-size: 18px;")
-        row.addWidget(self.mode)
 
-        self.btn_start = QPushButton("Start Scan")
-        self.btn_start.setStyleSheet(
-            "padding: 10px; background:#007bff; color:white; font-weight:bold;"
-        )
-        self.btn_start.clicked.connect(self.start_scan)
-        row.addWidget(self.btn_start)
+        self.theme_toggle = QPushButton("🌙 Dark")
+        self.theme_toggle.clicked.connect(self.toggle_theme)
 
-        layout.addLayout(row)
+        self.start_btn = QPushButton("Start Scan")
+        self.start_btn.clicked.connect(self.start_scan)
 
-        # Output Text
+        control_layout.addWidget(self.target_input)
+        control_layout.addWidget(self.mode)
+        control_layout.addWidget(self.start_btn)
+        control_layout.addWidget(self.theme_toggle)
+
+        control_frame.setLayout(control_layout)
+        layout.addWidget(control_frame)
+
+        # ================= OUTPUT =================
         self.output = QTextEdit()
         self.output.setReadOnly(True)
-        self.output.setStyleSheet("background:#111; color:white; padding:10px;")
         layout.addWidget(self.output)
 
-        # IMPORTANT PORTS TABLE
+        # ================= TABLE =================
         self.table = QTableWidget()
         self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Port", "Status", "Threat Level"])
+        self.table.setHorizontalHeaderLabels(["Port", "Status", "Risk"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setRowCount(len(IMPORTANT_PORTS))
-        layout.addWidget(self.table)
 
-        # Fill table
         for i, p in enumerate(IMPORTANT_PORTS):
             self.table.setItem(i, 0, QTableWidgetItem(str(p)))
             self.table.setItem(i, 1, QTableWidgetItem("—"))
             self.table.setItem(i, 2, QTableWidgetItem("—"))
 
-        self.setLayout(layout)
+        layout.addWidget(self.table)
 
-    # -----------------------------------------------------
+        self.setLayout(layout)
+        self.dark_mode = True
+
+    # ==================================================
+    def toggle_theme(self):
+        if self.dark_mode:
+            self.setStyleSheet(theme.LIGHT_THEME)
+            self.theme_toggle.setText("☀ Light")
+            self.dark_mode = False
+        else:
+            self.setStyleSheet(theme.DARK_THEME)
+            self.theme_toggle.setText("🌙 Dark")
+            self.dark_mode = True
+
+    # ==================================================
     def start_scan(self):
         target = self.target_input.text().strip()
+
         if not target:
-            self.output.append("❌ Please enter a target.")
+            self.output.append("❌ Please enter target")
             return
 
-        self.output.append(f"\n🔍 Starting scan on {target}...\n")
+        self.output.append(f"\n🔍 Scanning {target}...\n")
 
         self.worker = PortScanWorker(target, self.mode.currentText())
         self.worker.progress.connect(self.output.append)
         self.worker.finished.connect(self.scan_finished)
         self.worker.table_update.connect(self.update_table)
-
         self.worker.start()
 
-    # -----------------------------------------------------
+    # ==================================================
     def update_table(self, port, status, emoji):
-        try:
+        if port in IMPORTANT_PORTS:
             row = IMPORTANT_PORTS.index(port)
             self.table.setItem(row, 1, QTableWidgetItem(status))
             self.table.setItem(row, 2, QTableWidgetItem(emoji))
-        except:
-            pass
 
-    # -----------------------------------------------------
+    # ==================================================
     def scan_finished(self, results):
-        self.output.append("\n✔ Scan completed.\n")
+        self.output.append("\n✔ Scan Completed\n")

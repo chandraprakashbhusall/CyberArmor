@@ -3,12 +3,17 @@ import re
 import email
 from email import policy
 from urllib.parse import urlparse
-from PyQt6.QtWidgets import (
+
+from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QFileDialog, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox
+    QHeaderView, QMessageBox, QFrame, QProgressBar
 )
-from PyQt6.QtCore import Qt
+from PyQt5.QtCore import Qt
+
+# ✅ Import your theme
+from tools import theme
+
 
 # -------------------- SUSPICIOUS DATA --------------------
 SPAM_KEYWORDS = [
@@ -21,6 +26,7 @@ SUSPICIOUS_DOMAINS = [
 ]
 
 SUSPICIOUS_EXTENSIONS = [".exe", ".scr", ".zip", ".js", ".bat", ".vbs"]
+
 
 # -------------------- SPAM ANALYZER --------------------
 class EmailSpamAnalyzer:
@@ -49,128 +55,164 @@ class EmailSpamAnalyzer:
         else:
             self.body = msg.get_content()
 
-        # Extract links
         self.links = re.findall(r'https?://[^\s]+', self.body)
 
     def analyze(self):
         self.score = 0
         self.reasoning = []
 
-        # ------------------ SENDER CHECK ------------------
+        # Sender domain check
         sender_domain = self.sender.split("@")[-1].lower() if "@" in self.sender else ""
         if any(domain in sender_domain for domain in SUSPICIOUS_DOMAINS):
             self.score += 20
-            self.reasoning.append(f"Suspicious sender domain: {sender_domain}")
+            self.reasoning.append(("Suspicious sender domain", 20))
 
-        # ------------------ SUBJECT CHECK ------------------
+        # Subject keywords
         for word in SPAM_KEYWORDS:
             if word.lower() in self.subject.lower():
                 self.score += 5
-                self.reasoning.append(f"Spam keyword in subject: '{word}'")
+                self.reasoning.append((f"Keyword in subject: {word}", 5))
 
-        # ------------------ BODY CHECK ------------------
+        # Body keywords
         for word in SPAM_KEYWORDS:
             count = len(re.findall(word, self.body, re.IGNORECASE))
             if count > 0:
-                self.score += count * 2
-                self.reasoning.append(f"Spam keyword in body: '{word}' appears {count} times")
+                pts = count * 2
+                self.score += pts
+                self.reasoning.append((f"Keyword '{word}' in body ({count} times)", pts))
 
-        # ------------------ LINKS CHECK ------------------
+        # Links
         for link in self.links:
             domain = urlparse(link).netloc.lower()
             if any(susp in domain for susp in SUSPICIOUS_DOMAINS):
                 self.score += 10
-                self.reasoning.append(f"Suspicious link domain: {domain}")
+                self.reasoning.append((f"Suspicious link domain: {domain}", 10))
+
             if any(link.endswith(ext) for ext in SUSPICIOUS_EXTENSIONS):
                 self.score += 10
-                self.reasoning.append(f"Suspicious link extension: {link}")
+                self.reasoning.append((f"Dangerous file link: {link}", 10))
 
-        # Cap score at 100
         if self.score > 100:
             self.score = 100
 
         return self.score, self.reasoning
 
-# -------------------- GUI WIDGET --------------------
+
+# -------------------- GUI --------------------
 class EmailSpamCheckerWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self.setStyleSheet("background:#111; color:white; font-size:14px;")
-        self.resize(800, 600)
+        self.setAcceptDrops(True)
+        self.resize(900, 650)
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(15)
+        self.setStyleSheet(theme.get_stylesheet())  # ✅ Apply theme
 
-        # Title
-        title = QLabel("📧 Advanced Email Spam Checker")
+        main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(20)
+
+        # ===== TITLE =====
+        title = QLabel("📧 Email Spam Analyzer")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size:22px; font-weight:bold; color:cyan;")
-        layout.addWidget(title)
+        title.setStyleSheet("font-size:26px; font-weight:bold;")
+        main_layout.addWidget(title)
 
-        # File selection
+        # ===== CARD FRAME =====
+        card = QFrame()
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(15)
+
+        # File Selection
         file_layout = QHBoxLayout()
-        self.file_label = QLabel("Select an email file (.eml/.txt)")
-        self.file_label.setStyleSheet("color:lightblue;")
-        self.select_btn = QPushButton("Select File")
+        self.file_label = QLabel("Drag & Drop email OR Click Select")
+        self.select_btn = QPushButton("Select Email File")
         self.select_btn.clicked.connect(self.select_file)
+
         file_layout.addWidget(self.file_label)
         file_layout.addWidget(self.select_btn)
-        layout.addLayout(file_layout)
+        card_layout.addLayout(file_layout)
 
         # Analyze Button
         self.analyze_btn = QPushButton("Analyze Email")
         self.analyze_btn.clicked.connect(self.analyze_email)
-        layout.addWidget(self.analyze_btn)
+        card_layout.addWidget(self.analyze_btn)
 
-        # Email Info
+        # Info Text
         self.info_text = QTextEdit()
         self.info_text.setReadOnly(True)
-        self.info_text.setStyleSheet("background:#222; color:white;")
-        layout.addWidget(self.info_text)
+        card_layout.addWidget(self.info_text)
 
-        # Result Table
+        # Table
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Reason", "Points"])
-        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.table)
+        card_layout.addWidget(self.table)
 
-        # Spam Score
+        # Progress Bar
+        self.progress = QProgressBar()
+        self.progress.setMaximum(100)
+        card_layout.addWidget(self.progress)
+
+        # Score Label
         self.score_label = QLabel("Spam Score: -")
-        self.score_label.setStyleSheet("font-size:16px; font-weight:bold; color:lightgreen;")
-        layout.addWidget(self.score_label)
+        self.score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.score_label.setStyleSheet("font-size:18px; font-weight:bold;")
+        card_layout.addWidget(self.score_label)
+
+        main_layout.addWidget(card)
 
         self.email_path = None
 
+    # -------------------- Drag & Drop --------------------
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        file_path = event.mimeData().urls()[0].toLocalFile()
+        if file_path.endswith((".eml", ".txt")):
+            self.email_path = file_path
+            self.file_label.setText(os.path.basename(file_path))
+
+    # -------------------- File Select --------------------
     def select_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select Email File", "", "Email Files (*.eml *.txt)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Email File", "", "Email Files (*.eml *.txt)"
+        )
         if path:
             self.email_path = path
             self.file_label.setText(os.path.basename(path))
 
+    # -------------------- Analyze --------------------
     def analyze_email(self):
         if not self.email_path:
-            QMessageBox.warning(self, "Error", "Select a file first!")
+            QMessageBox.warning(self, "Error", "Please select an email file first!")
             return
 
         analyzer = EmailSpamAnalyzer(self.email_path)
         analyzer.parse_email()
         score, reasons = analyzer.analyze()
 
+        # Info Preview
         self.info_text.setPlainText(
-            f"From: {analyzer.sender}\nSubject: {analyzer.subject}\n\nBody Preview:\n{analyzer.body[:500]}..."
+            f"From: {analyzer.sender}\n"
+            f"Subject: {analyzer.subject}\n\n"
+            f"Body Preview:\n{analyzer.body[:600]}"
         )
 
+        # Table Fill
         self.table.setRowCount(0)
-        for row, reason in enumerate(reasons):
+        for row, (reason, points) in enumerate(reasons):
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(reason))
-            self.table.setItem(row, 1, QTableWidgetItem(str(score)))
+            self.table.setItem(row, 1, QTableWidgetItem(str(points)))
 
+        # Score Display
+        self.progress.setValue(score)
         self.score_label.setText(f"Spam Score: {score}/100")
+
         if score >= 70:
-            self.score_label.setStyleSheet("color:red; font-weight:bold;")
+            self.score_label.setStyleSheet("color:red; font-weight:bold; font-size:18px;")
         elif score >= 40:
-            self.score_label.setStyleSheet("color:orange; font-weight:bold;")
+            self.score_label.setStyleSheet("color:orange; font-weight:bold; font-size:18px;")
         else:
-            self.score_label.setStyleSheet("color:lightgreen; font-weight:bold;")
+            self.score_label.setStyleSheet("color:green; font-weight:bold; font-size:18px;")

@@ -2,394 +2,595 @@ import sqlite3
 from datetime import datetime
 import os
 import json
+import hashlib
 
 DB_NAME = "cyberarmor.db"
 USERS_FILE = "users.json"
 
-# ------------------- CONNECTION -------------------
+
+# =====================================================
+# CONNECTION
+# =====================================================
+
 def connect():
     return sqlite3.connect(DB_NAME)
 
-# ------------------- INITIALIZATION -------------------
+
+# =====================================================
+# INIT
+# =====================================================
+
 def init_db():
+
     conn = connect()
     cursor = conn.cursor()
 
-    # USERS TABLE
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            email TEXT UNIQUE,
-            password TEXT,
-            created_at TEXT
-        )
-    """)
 
-    # WIFI LOGS
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS wifi_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ssid TEXT,
-            signal INT,
-            security TEXT,
-            password TEXT,
-            strength_level TEXT,
-            entropy REAL,
-            download REAL,
-            upload REAL,
-            ping REAL,
-            timestamp TEXT
-        )
-    """)
+    CREATE TABLE IF NOT EXISTS users(
 
-    # PORT SCANS
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS port_scans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            target TEXT,
-            scan_type TEXT,
-            open_ports TEXT,
-            os_guess TEXT,
-            timestamp TEXT
-        )
-    """)
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-    # LINK SCANS
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS link_scans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT,
-            domain TEXT,
-            risk_level INT DEFAULT 0,
-            issues TEXT,
-            timestamp TEXT
-        )
-    """)
+        username TEXT UNIQUE NOT NULL,
 
-    # FILE SCANS
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS file_scans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_path TEXT,
-            threat_count INT DEFAULT 0,
-            risk_level INT DEFAULT 0,
-            timestamp TEXT
-        )
-    """)
+        email TEXT UNIQUE NOT NULL,
 
-    # SYSTEM SCANS
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS system_scans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            scan_name TEXT,
-            issues_count INT DEFAULT 0,
-            threat_level INT DEFAULT 0,
-            timestamp TEXT
-        )
+        password TEXT NOT NULL,
+
+        created_at TEXT NOT NULL
+
+    )
+
     """)
 
     conn.commit()
     conn.close()
 
-    # Ensure JSON backup file exists
     if not os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "w") as f:
-            json.dump([], f)
+
+        with open(USERS_FILE,"w") as f:
+
+            json.dump([],f)
 
 
-# ------------------- USER FUNCTIONS -------------------
-def add_user(username, email, password):
-    """Register new user. Returns True if success, False if username/email exists"""
-    conn = connect()
-    cursor = conn.cursor()
+init_db()
+
+
+# =====================================================
+# HASH
+# =====================================================
+
+def hash_password(password):
+
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def current_time():
+
+    return datetime.now().isoformat()
+
+
+# =====================================================
+# REGISTER
+# =====================================================
+
+def add_user(username,email,password):
+
+    if not username or not email or not password:
+
+        return False
+
+
+    conn=connect()
+    cursor=conn.cursor()
+
     try:
+
+        hashed=hash_password(password)
+
+        created=current_time()
+
         cursor.execute("""
-            INSERT INTO users (username, email, password, created_at)
-            VALUES (?, ?, ?, ?)
-        """, (username, email, password, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+
+        INSERT INTO users(username,email,password,created_at)
+
+        VALUES(?,?,?,?)
+
+        """,(username,email,hashed,created))
+
+
         conn.commit()
 
-        # ✅ Backup to JSON
-        backup_user_to_file(username, email, password)
+
+        backup_user_to_file(
+            username,
+            email,
+            hashed,
+            created
+        )
 
         return True
+
+
     except sqlite3.IntegrityError:
+
         return False
+
+
     finally:
+
         conn.close()
 
 
-def backup_user_to_file(username, email, password):
-    """Save user to local JSON file"""
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r") as f:
-            users = json.load(f)
-    else:
-        users = []
+# =====================================================
+# LOGIN
+# =====================================================
 
-    users.append({
-        "username": username,
-        "email": email,
-        "password": password,
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
+def check_user(email,password):
 
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=4)
+    conn=connect()
+    cursor=conn.cursor()
+
+    hashed=hash_password(password)
+
+    cursor.execute("""
+
+    SELECT id,username,email,created_at
+
+    FROM users
+
+    WHERE email=? AND password=?
+
+    """,(email,hashed))
 
 
-def user_exists(username=None, email=None):
-    conn = connect()
-    cursor = conn.cursor()
+    row=cursor.fetchone()
+
+    conn.close()
+
+    return row
+
+
+
+def verify_credentials(email,password):
+
+    return bool(check_user(email,password))
+
+
+
+# =====================================================
+# VERIFY PASSWORD
+# =====================================================
+
+def verify_password(user_id,password):
+
+    conn=connect()
+
+    cursor=conn.cursor()
+
+    cursor.execute("""
+
+    SELECT password FROM users
+
+    WHERE id=?
+
+    """,(user_id,))
+
+
+    row=cursor.fetchone()
+
+    conn.close()
+
+    if not row:
+
+        return False
+
+
+    return row[0]==hash_password(password)
+
+
+
+# =====================================================
+# UPDATE PASSWORD
+# =====================================================
+
+def update_password(user_id,new_password):
+
+    conn=connect()
+
+    cursor=conn.cursor()
+
+    cursor.execute("""
+
+    UPDATE users
+
+    SET password=?
+
+    WHERE id=?
+
+    """,(hash_password(new_password),user_id))
+
+
+    conn.commit()
+
+    conn.close()
+
+    return True
+
+
+
+# =====================================================
+# USER LOOKUPS
+# =====================================================
+
+def user_exists(username=None,email=None):
+
+    conn=connect()
+
+    cursor=conn.cursor()
+
+
     if username:
-        cursor.execute("SELECT id FROM users WHERE username=?", (username,))
+
+        cursor.execute(
+        "SELECT id FROM users WHERE username=?",
+        (username,))
+
     elif email:
-        cursor.execute("SELECT id FROM users WHERE email=?", (email,))
+
+        cursor.execute(
+        "SELECT id FROM users WHERE email=?",
+        (email,))
+
     else:
+
         conn.close()
+
         return False
-    res = cursor.fetchone()
-    conn.close()
-    return bool(res)
 
 
-def check_user(email, password):
-    conn = connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, username FROM users WHERE email=? AND password=?", (email, password))
-    res = cursor.fetchone()
-    conn.close()
-    return res
+    row=cursor.fetchone()
 
-
-# ------------------- SAVE FUNCTIONS -------------------
-def save_wifi(ssid, signal, security, password, strength_level,
-              entropy, download=None, upload=None, ping=None):
-    conn = connect()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO wifi_logs 
-        (ssid, signal, security, password, strength_level, entropy, download, upload, ping, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        ssid, signal, security, password, strength_level, entropy,
-        download, upload, ping, datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
-    conn.commit()
     conn.close()
 
-
-def save_port_scan(target, scan_type, open_ports, os_guess):
-    conn = connect()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO port_scans (target, scan_type, open_ports, os_guess, timestamp)
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        target, scan_type, str(open_ports), os_guess,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
-    conn.commit()
-    conn.close()
-
-
-def save_link_scan(data):
-    conn = connect()
-    cursor = conn.cursor()
-    issues = ", ".join(data.get("flags", []))
-    cursor.execute("""
-        INSERT INTO link_scans (url, domain, risk_level, issues, timestamp)
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        data.get("url", ""),
-        data.get("domain", ""),
-        int(data.get("risk_score", 0)),
-        issues,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
-    conn.commit()
-    conn.close()
-
-
-def save_file_scan(file_path, threat_count=0, risk_level=0):
-    conn = connect()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO file_scans (file_path, threat_count, risk_level, timestamp)
-        VALUES (?, ?, ?, ?)
-    """, (
-        file_path, threat_count, risk_level,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
-    conn.commit()
-    conn.close()
-
-
-def save_system_scan(scan_name, issues_count=0, threat_level=0):
-    conn = connect()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO system_scans (scan_name, issues_count, threat_level, timestamp)
-        VALUES (?, ?, ?, ?)
-    """, (
-        scan_name, issues_count, threat_level,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
-    conn.commit()
-    conn.close()
-
-
-# ------------------- COUNT FUNCTIONS -------------------
-def count_wifi_tests():
-    conn = connect()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM wifi_logs")
-    res = c.fetchone()[0]
-    conn.close()
-    return res
-
-
-def count_port_scans():
-    conn = connect()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM port_scans")
-    res = c.fetchone()[0]
-    conn.close()
-    return res
-
-
-def count_link_checks():
-    conn = connect()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM link_scans")
-    res = c.fetchone()[0]
-    conn.close()
-    return res
-
-
-def count_file_scans():
-    conn = connect()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM file_scans")
-    res = c.fetchone()[0]
-    conn.close()
-    return res
-
-
-def count_system_scans():
-    conn = connect()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM system_scans")
-    res = c.fetchone()[0]
-    conn.close()
-    return res
-
-
-# ------------------- LAST THREAT LEVEL FUNCTIONS -------------------
-def last_file_scan_threat_level():
-    conn = connect()
-    c = conn.cursor()
-    try:
-        c.execute("SELECT risk_level FROM file_scans ORDER BY id DESC LIMIT 1")
-        res = c.fetchone()
-        return res[0] if res else 0
-    except sqlite3.OperationalError:
-        return 0
-    finally:
-        conn.close()
-
-
-def last_system_scan_threat_level():
-    conn = connect()
-    c = conn.cursor()
-    try:
-        c.execute("SELECT threat_level FROM system_scans ORDER BY id DESC LIMIT 1")
-        res = c.fetchone()
-        return res[0] if res else 0
-    except sqlite3.OperationalError:
-        return 0
-    finally:
-        conn.close()
-
-
-# ------------------- RECENT ACTIVITY -------------------
-def get_recent_activity(limit=10):
-    conn = connect()
-    c = conn.cursor()
-
-    try:
-        query = f"""
-            SELECT 'WiFi', ssid || ' (' || signal || 'dBm)', timestamp
-            FROM wifi_logs
-            UNION ALL
-            SELECT 'Port Scan', target || ' (' || scan_type || ')', timestamp
-            FROM port_scans
-            UNION ALL
-            SELECT 'Link Scan', url || ' [risk ' || risk_level || ']', timestamp
-            FROM link_scans
-            UNION ALL
-            SELECT 'File Scan', file_path || ' [risk ' || risk_level || ']', timestamp
-            FROM file_scans
-            UNION ALL
-            SELECT 'System Scan', scan_name || ' [issues ' || threat_level || '%]', timestamp
-            FROM system_scans
-            ORDER BY timestamp DESC LIMIT {limit}
-        """
-        c.execute(query)
-        rows = c.fetchall()
-    except sqlite3.OperationalError:
-        rows = []
-    conn.close()
-    return rows
-
-
-# -----------------------------------------------------
-# ⭐ ADDITIONS FOR LOGIN & REGISTER BELOW
-# -----------------------------------------------------
-
-def get_user_by_email(email):
-    """Get user details by email"""
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id, username, email, password FROM users WHERE email=?", (email,))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-
-def get_user_by_username(username):
-    """Get user details by username"""
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id, username, email, password FROM users WHERE username=?", (username,))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-
-def verify_credentials(email, password):
-    """Return True if email+password match"""
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE email=? AND password=?", (email, password))
-    row = cur.fetchone()
-    conn.close()
     return bool(row)
 
 
-# ------------------- JSON FILE HELPERS -------------------
-def get_user_file_data(email=None, username=None):
-    """Get user from JSON file"""
+
+def get_user_by_email(email):
+
+    conn=connect()
+
+    cursor=conn.cursor()
+
+    cursor.execute("""
+
+    SELECT id,username,email,created_at
+
+    FROM users
+
+    WHERE email=?
+
+    """,(email,))
+
+
+    row=cursor.fetchone()
+
+    conn.close()
+
+    return row
+
+
+
+def get_user_by_username(username):
+
+    conn=connect()
+
+    cursor=conn.cursor()
+
+    cursor.execute("""
+
+    SELECT id,username,email,created_at
+
+    FROM users
+
+    WHERE username=?
+
+    """,(username,))
+
+
+    row=cursor.fetchone()
+
+    conn.close()
+
+    return row
+
+
+
+def get_user_by_id(user_id):
+
+    conn=connect()
+
+    cursor=conn.cursor()
+
+    cursor.execute("""
+
+    SELECT id,username,email,created_at
+
+    FROM users
+
+    WHERE id=?
+
+    """,(user_id,))
+
+
+    row=cursor.fetchone()
+
+    conn.close()
+
+    return row
+
+
+# =====================================================
+# DELETE
+# =====================================================
+
+def delete_user(email):
+
+    conn=connect()
+
+    cursor=conn.cursor()
+
+    cursor.execute(
+    "DELETE FROM users WHERE email=?",
+    (email,))
+
+    conn.commit()
+
+    conn.close()
+
+
+# =====================================================
+# JSON BACKUP
+# =====================================================
+
+def backup_user_to_file(username,email,password,created):
+
+    try:
+
+        if os.path.exists(USERS_FILE):
+
+            with open(USERS_FILE,"r") as f:
+
+                users=json.load(f)
+
+        else:
+
+            users=[]
+
+    except:
+
+        users=[]
+
+
+    users.append({
+
+        "username":username,
+
+        "email":email,
+
+        "password":password,
+
+        "created_at":created
+
+    })
+
+
+    with open(USERS_FILE,"w") as f:
+
+        json.dump(users,f,indent=4)
+
+
+
+# =====================================================
+# JSON SEARCH
+# =====================================================
+
+def get_user_file_data(email=None,username=None):
+
     if not os.path.exists(USERS_FILE):
+
         return None
 
-    with open(USERS_FILE, "r") as f:
-        users = json.load(f)
+
+    try:
+
+        with open(USERS_FILE,"r") as f:
+
+            users=json.load(f)
+
+    except:
+
+        return None
+
 
     for u in users:
-        if email and u["email"] == email:
+
+        if email and u["email"]==email:
+
             return u
-        if username and u["username"] == username:
+
+        if username and u["username"]==username:
+
             return u
+
+
     return None
+
+
+# ================= TOOL LOG TABLE =================
+
+def init_logs():
+
+    conn = connect()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS logs(
+
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT,
+        tool TEXT,
+        date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+init_logs()
+
+
+def log_tool(username,tool):
+
+    conn=connect()
+    cur=conn.cursor()
+
+    cur.execute(
+    "INSERT INTO logs(username,tool) VALUES(?,?)",
+    (username,tool))
+
+    conn.commit()
+    conn.close()
+
+
+
+def tool_stats():
+
+    conn=connect()
+    cur=conn.cursor()
+
+    cur.execute("""
+
+    SELECT tool,COUNT(*)
+    FROM logs
+    GROUP BY tool
+
+    """)
+
+    rows=cur.fetchall()
+
+    conn.close()
+
+    data={}
+
+    for r in rows:
+        data[r[0]]=r[1]
+
+    return data
+
+
+
+def total_scans():
+
+    conn=connect()
+    cur=conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM logs")
+
+    n=cur.fetchone()[0]
+
+    conn.close()
+
+    return n
+
+
+# =====================================================
+# ADMIN FUNCTIONS (NEW)
+# =====================================================
+
+def total_users():
+
+    conn=connect()
+    cur=conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM users")
+
+    n=cur.fetchone()[0]
+
+    conn.close()
+
+    return n
+
+
+def total_tools():
+
+    stats=tool_stats()
+
+    return len(stats)
+
+
+def get_all_users():
+
+    conn=connect()
+
+    cur=conn.cursor()
+
+    cur.execute("""
+
+    SELECT username,email,created_at
+    FROM users
+    ORDER BY id DESC
+
+    """)
+
+    rows=cur.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def search_users(keyword):
+
+    conn=connect()
+
+    cur=conn.cursor()
+
+    cur.execute("""
+
+    SELECT username,email,created_at
+    FROM users
+    WHERE username LIKE ? OR email LIKE ?
+
+    """,(f"%{keyword}%",f"%{keyword}%"))
+
+
+    rows=cur.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def scans_per_user():
+
+    conn=connect()
+
+    cur=conn.cursor()
+
+    cur.execute("""
+
+    SELECT username,COUNT(*)
+    FROM logs
+    GROUP BY username
+
+    """)
+
+    rows=cur.fetchall()
+
+    conn.close()
+
+    return rows

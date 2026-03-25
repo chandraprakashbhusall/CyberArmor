@@ -1,135 +1,215 @@
-import platform, os, psutil, socket, subprocess
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QTextEdit, QPushButton
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+import platform
+import psutil
+import socket
+import subprocess
+from datetime import datetime
 
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QTextEdit,
+    QPushButton, QFrame, QHBoxLayout, QProgressBar
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from tools import theme
+
+
+# ==========================================================
+# SYSTEM SCAN THREAD
+# ==========================================================
 class SystemScanThread(QThread):
-    result_signal = pyqtSignal(str)
+    result_signal = pyqtSignal(dict)
 
     def run(self):
-        report = "🖥 SYSTEM SECURITY REPORT\n"
-        report += "──────────────────────────\n\n"
+        result = {}
+        risk_score = 0
 
         # ---------------- OS INFO ----------------
-        report += f"🔹 Operating System: {platform.system()} {platform.release()}\n"
-        report += f"🔹 Kernel Version: {platform.version()}\n\n"
+        result["os"] = f"{platform.system()} {platform.release()}"
 
-        # ---------------- CPU & RAM ----------------
+        # ---------------- CPU ----------------
         cpu = psutil.cpu_percent(interval=1)
-        ram = psutil.virtual_memory().percent
-        report += f"⚙ CPU Usage: {cpu}%\n"
-        report += f"🧠 RAM Usage: {ram}%\n\n"
+        result["cpu"] = cpu
+        if cpu > 85:
+            risk_score += 1
 
-        # ---------------- DISK USAGE ----------------
+        # ---------------- RAM ----------------
+        ram = psutil.virtual_memory().percent
+        result["ram"] = ram
+        if ram > 85:
+            risk_score += 1
+
+        # ---------------- DISK ----------------
         try:
             disk = psutil.disk_usage('/')
-            disk_status = "🟢 Healthy" if disk.percent < 85 else "⚠️ High Usage"
-            report += f"💾 Disk Usage: {disk.percent}% ({disk_status})\n\n"
+            result["disk"] = disk.percent
+            if disk.percent > 90:
+                risk_score += 2
         except:
-            report += "💾 Disk Usage: Unable to determine\n\n"
+            result["disk"] = None
 
-        # ---------------- RUNNING PROCESSES ----------------
-        report += f"📌 Running Processes: {len(psutil.pids())}\n\n"
-
-        # ---------------- OPEN PORTS ----------------
-        report += "🌐 Listening Network Ports:\n"
-        try:
-            ports = subprocess.getoutput("ss -tulpn | grep LISTEN")
-            if ports:
-                report += "⚠️ Some services are listening on network ports:\n"
-                for line in ports.splitlines()[:10]:
-                    report += f"   • {line}\n"
-                report += "   (Listing limited to 10 entries)\n\n"
-            else:
-                report += "🟢 No unexpected open ports detected.\n\n"
-        except:
-            report += "❌ Could not check open ports.\n\n"
-
-        # ---------------- FIREWALL STATUS ----------------
-        report += "🔥 Firewall Status:\n"
-        if platform.system() == "Linux":
-            try:
-                ufw = subprocess.getoutput("sudo ufw status")
-                if "inactive" in ufw.lower():
-                    report += "⚠️ Firewall is inactive. Your system is exposed!\n\n"
-                else:
-                    report += f"🟢 Firewall active:\n{ufw}\n\n"
-            except:
-                report += "❌ Unable to determine firewall status.\n\n"
-        else:
-            report += "ℹ️ Firewall check only available on Linux.\n\n"
-
-        # ---------------- ROOT LOGIN ----------------
-        if platform.system() == "Linux":
-            try:
-                sshd = subprocess.getoutput("grep -i 'PermitRootLogin' /etc/ssh/sshd_config")
-                if "yes" in sshd.lower():
-                    report += "⚠️ Root login via SSH is ENABLED — Very risky!\n\n"
-                else:
-                    report += "🟢 Root login via SSH is disabled — Good!\n\n"
-            except:
-                report += "❌ Unable to check root login setting.\n\n"
-
-        # ---------------- WEAK FILE PERMISSIONS ----------------
-        if platform.system() == "Linux":
-            report += "🔍 World-writable Files (may pose security risk):\n"
-            try:
-                ww = subprocess.getoutput("find / -perm -0002 -type f 2>/dev/null | head -n 5")
-                if ww:
-                    report += f"⚠️ Found some world-writable files:\n{ww}\n   (Listing limited to 5)\n\n"
-                else:
-                    report += "🟢 No weak file permissions detected.\n\n"
-            except:
-                report += "❌ Could not scan for weak permissions.\n\n"
-
-        # ---------------- INTERNET CONNECTIVITY ----------------
-        report += "🌐 Internet Connectivity:\n"
+        # ---------------- INTERNET ----------------
         try:
             socket.create_connection(("8.8.8.8", 53), timeout=3)
-            report += "🟢 Internet is active\n"
+            result["internet"] = True
         except:
-            report += "⚠️ Internet is not reachable\n"
+            result["internet"] = False
+            risk_score += 1
 
-        # ---------------- FINAL SYSTEM STATUS ----------------
-        report += "\n──────────────────────────\n"
-        report += "📌 Summary:\n"
-        report += " - Review open ports and world-writable files carefully.\n"
-        report += " - Ensure firewall is active and root login is disabled.\n"
-        report += " - Check CPU, RAM, and disk usage regularly.\n"
-        report += "🛡 Stay Safe! \n"
+        # ---------------- FIREWALL (Linux Only) ----------------
+        firewall_active = None
+        if platform.system() == "Linux":
+            try:
+                status = subprocess.getoutput("ufw status")
+                firewall_active = "inactive" not in status.lower()
+                if not firewall_active:
+                    risk_score += 2
+            except:
+                firewall_active = None
 
-        self.result_signal.emit(report)
+        result["firewall"] = firewall_active
+
+        # ---------------- FINAL STATUS ----------------
+        if risk_score == 0:
+            overall = "SAFE"
+        elif risk_score <= 2:
+            overall = "WARNING"
+        else:
+            overall = "CRITICAL"
+
+        result["overall"] = overall
+        result["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        self.result_signal.emit(result)
 
 
+# ==========================================================
+# MAIN WIDGET
+# ==========================================================
 class SystemSecurityWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self.setStyleSheet("background-color:#0c0c0c; color:white;")
 
-        layout = QVBoxLayout()
-        title = QLabel("🖥 System Security Scanner")
-        title.setStyleSheet("font-size:22px; font-weight:bold; color:cyan;")
+        self.setStyleSheet(theme.get_stylesheet())
+
+        main = QVBoxLayout(self)
+        main.setContentsMargins(40, 30, 40, 30)
+        main.setSpacing(25)
+
+        # ================= TITLE =================
+        title = QLabel("🛡 System Health & Security Check")
         title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size:26px; font-weight:700;")
+        main.addWidget(title)
+
+        # ================= STATUS CARD =================
+        self.status_card = self.create_card("System Status")
+        self.status_label = QLabel("Click scan to check your system health.")
+        self.status_label.setStyleSheet("font-size:16px; font-weight:600;")
+        self.status_card.layout().addWidget(self.status_label)
+
+        self.progress = QProgressBar()
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.status_card.layout().addWidget(self.progress)
+
+        main.addWidget(self.status_card)
+
+        # ================= DETAILS CARD =================
+        self.details_card = self.create_card("Scan Details")
+        self.details_output = QTextEdit()
+        self.details_output.setReadOnly(True)
+        self.details_card.layout().addWidget(self.details_output)
+
+        main.addWidget(self.details_card)
+
+        # ================= BUTTON =================
+        self.scan_btn = QPushButton("Run System Scan")
+        self.scan_btn.setFixedHeight(45)
+        self.scan_btn.clicked.connect(self.start_scan)
+        main.addWidget(self.scan_btn)
+
+        main.addStretch()
+
+    # ==================================================
+    # CARD CONTAINER
+    # ==================================================
+    def create_card(self, title_text):
+        card = QFrame()
+        card.setObjectName("card")
+        card.setStyleSheet("""
+            QFrame#card {
+                border-radius: 12px;
+                padding: 20px;
+                background-color: rgba(255,255,255,0.04);
+            }
+        """)
+        layout = QVBoxLayout(card)
+        layout.setSpacing(15)
+
+        title = QLabel(title_text)
+        title.setStyleSheet("font-size:18px; font-weight:600;")
         layout.addWidget(title)
 
-        self.output = QTextEdit()
-        self.output.setReadOnly(True)
-        self.output.setStyleSheet("background:#111; font-size:15px; padding:10px;")
-        layout.addWidget(self.output)
+        return card
 
-        self.scan_btn = QPushButton("Run Full Scan 🔍")
-        self.scan_btn.setStyleSheet(
-            "padding:12px; background:#1a1a1a; border-radius:6px; font-size:16px;"
-        )
-        self.scan_btn.clicked.connect(self.start_scan)
-        layout.addWidget(self.scan_btn)
-
-        self.setLayout(layout)
-
+    # ==================================================
+    # START SCAN
+    # ==================================================
     def start_scan(self):
-        self.output.setText("⏳ Running system scan… please wait...\n")
+        self.status_label.setText("Scanning system... please wait")
+        self.progress.setValue(30)
+        self.details_output.clear()
+
         self.thread = SystemScanThread()
         self.thread.result_signal.connect(self.show_result)
         self.thread.start()
 
-    def show_result(self, text):
-        self.output.setText(text)
+    # ==================================================
+    # SHOW RESULT
+    # ==================================================
+    def show_result(self, data):
+        self.progress.setValue(100)
+
+        overall = data["overall"]
+
+        if overall == "SAFE":
+            self.status_label.setText("🟢 Your system looks safe and healthy.")
+        elif overall == "WARNING":
+            self.status_label.setText("🟡 Minor issues detected. Review details below.")
+        else:
+            self.status_label.setText("🔴 Security risk detected! Attention required.")
+
+        # ================= USER FRIENDLY REPORT =================
+        report = f"""
+📅 Scan Time: {data['time']}
+
+💻 Operating System:
+   {data['os']}
+
+⚙ CPU Usage:
+   {data['cpu']}%
+   {"High usage — close heavy apps." if data['cpu'] > 85 else "Normal usage."}
+
+🧠 RAM Usage:
+   {data['ram']}%
+   {"Memory almost full — consider restarting." if data['ram'] > 85 else "Memory usage is healthy."}
+
+💾 Disk Usage:
+   {data['disk']}%
+   {"Disk nearly full — clean unnecessary files." if data['disk'] and data['disk'] > 90 else "Storage space is fine."}
+
+🌐 Internet Connection:
+   {"Connected and working." if data['internet'] else "No internet connection detected."}
+"""
+
+        if data["firewall"] is not None:
+            report += f"""
+🔥 Firewall Protection:
+   {"Active and protecting your system." if data['firewall'] else "Firewall is OFF — your system may be exposed."}
+"""
+
+        report += "\n\n🛡 Recommendation:\n"
+        report += " - Keep your system updated.\n"
+        report += " - Avoid installing unknown software.\n"
+        report += " - Use antivirus for extra protection.\n"
+
+        self.details_output.setText(report)

@@ -8,18 +8,23 @@ import hashlib
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton,
     QLineEdit, QTableWidget, QTableWidgetItem,
-    QHBoxLayout, QMessageBox, QGroupBox, QFormLayout, QFrame
+    QHBoxLayout, QMessageBox, QGroupBox,
+    QFormLayout, QProgressBar
 )
 from PyQt5.QtCore import Qt
 
-# ===================== CONFIG =====================
+from tools import theme
+
+# ================= CONFIG =================
 DATA_FILE = "password_vault.json"
 SYMBOLS = "!@#$%^&*()_+-="
 
-# ===================== CORE LOGIC =====================
+
+# ================= CORE =================
 def generate_password(length=12):
     chars = string.ascii_letters + string.digits + SYMBOLS
     return "".join(random.choice(chars) for _ in range(length))
+
 
 def check_strength(password):
     score = 0
@@ -33,6 +38,7 @@ def check_strength(password):
     elif score == 3: return "Medium", score, "orange"
     else: return "Strong", score, "green"
 
+
 def calculate_entropy(password):
     charset = 0
     if any(c.islower() for c in password): charset += 26
@@ -41,6 +47,7 @@ def calculate_entropy(password):
     if any(c in SYMBOLS for c in password): charset += len(SYMBOLS)
     if charset == 0: return 0
     return round(len(password) * math.log2(charset), 2)
+
 
 def estimate_crack_time(entropy):
     guesses_per_sec = 1e9
@@ -51,8 +58,10 @@ def estimate_crack_time(entropy):
     if seconds < 31536000: return "Days"
     return "Years"
 
+
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
+
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -60,146 +69,134 @@ def load_data():
             return json.load(f)
     return []
 
+
 def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-# ===================== PASSWORD MANAGER WIDGET =====================
+
+# ================= WIDGET =================
 class PasswordManagerWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self.setStyleSheet("color:white; font-size:14px; background:#1e1e1e;")
-        main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(20)
+        self.setStyleSheet(theme.get_stylesheet())
+        self.resize(1000, 700)
 
-        # ---------------- TITLE ----------------
-        title = QLabel("🔐 Advanced Password Manager")
-        title.setStyleSheet("font-size:24px; font-weight:bold; color:cyan;")
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+
+        title = QLabel("🔐 Secure Password Manager")
         title.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(title)
+        title.setStyleSheet("font-size:26px; font-weight:bold;")
+        layout.addWidget(title)
 
-        # ---------------- GENERATE PASSWORD ----------------
+        # ---------- Generate ----------
         gen_group = QGroupBox("Generate Password")
-        gen_group.setStyleSheet(
-            "QGroupBox {color:cyan; font-weight:bold; border:1px solid cyan; border-radius:5px; padding:10px;}"
-        )
         gen_layout = QVBoxLayout()
-        input_layout = QHBoxLayout()
-        self.gen_length = QLineEdit()
-        self.gen_length.setPlaceholderText("Length (default 12)")
-        self.gen_length.setFixedWidth(120)
-        self.gen_pwd_display = QLineEdit()
-        self.gen_pwd_display.setReadOnly(True)
-        self.gen_pwd_display.setStyleSheet("background:#222; color:lightgreen; font-weight:bold;")
-        input_layout.addWidget(QLabel("Password Length:"))
-        input_layout.addWidget(self.gen_length)
-        input_layout.addWidget(QLabel("Generated Password:"))
-        input_layout.addWidget(self.gen_pwd_display)
-        gen_layout.addLayout(input_layout)
 
-        gen_btn = QPushButton("Generate Password")
-        gen_btn.setStyleSheet("background:cyan; color:black; font-weight:bold;")
+        row = QHBoxLayout()
+        self.length_input = QLineEdit()
+        self.length_input.setPlaceholderText("Length (default 12)")
+        self.generated_pwd = QLineEdit()
+        self.generated_pwd.setReadOnly(True)
+
+        row.addWidget(self.length_input)
+        row.addWidget(self.generated_pwd)
+
+        gen_btn = QPushButton("Generate")
         gen_btn.clicked.connect(self.generate_ui)
+
+        gen_layout.addLayout(row)
         gen_layout.addWidget(gen_btn)
         gen_group.setLayout(gen_layout)
-        main_layout.addWidget(gen_group)
+        layout.addWidget(gen_group)
 
-        # ---------------- CHECK STRENGTH ----------------
-        strength_group = QGroupBox("Password Strength Checker")
-        strength_group.setStyleSheet(
-            "QGroupBox {color:cyan; font-weight:bold; border:1px solid cyan; border-radius:5px; padding:10px;}"
-        )
+        # ---------- Strength ----------
+        strength_group = QGroupBox("Password Strength Analyzer")
         strength_layout = QVBoxLayout()
-        self.str_pwd_input = QLineEdit()
-        self.str_pwd_input.setPlaceholderText("Enter password to check")
-        self.str_pwd_input.setStyleSheet("background:#222; color:white; font-weight:bold;")
-        strength_layout.addWidget(self.str_pwd_input)
-        self.str_result = QLabel("Strength: - | Rating: -/5 | Entropy: - | Crack: -")
-        self.str_result.setStyleSheet("font-weight:bold;")
-        strength_layout.addWidget(self.str_result)
+
+        self.str_input = QLineEdit()
+        self.str_input.setPlaceholderText("Enter password to analyze")
+        strength_layout.addWidget(self.str_input)
+
+        self.str_progress = QProgressBar()
+        self.str_progress.setMaximum(5)
+        strength_layout.addWidget(self.str_progress)
+
+        self.str_label = QLabel("Strength: -")
+        strength_layout.addWidget(self.str_label)
+
         check_btn = QPushButton("Check Strength")
-        check_btn.setStyleSheet("background:orange; color:black; font-weight:bold;")
         check_btn.clicked.connect(self.check_ui)
         strength_layout.addWidget(check_btn)
-        strength_group.setLayout(strength_layout)
-        main_layout.addWidget(strength_group)
 
-        # ---------------- SAVE PASSWORD ----------------
+        strength_group.setLayout(strength_layout)
+        layout.addWidget(strength_group)
+
+        # ---------- Save ----------
         save_group = QGroupBox("Save Password")
-        save_group.setStyleSheet(
-            "QGroupBox {color:cyan; font-weight:bold; border:1px solid cyan; border-radius:5px; padding:10px;}"
-        )
         save_layout = QFormLayout()
+
         self.platform_input = QLineEdit()
-        self.platform_input.setPlaceholderText("Platform (Facebook, Instagram)")
         self.username_input = QLineEdit()
-        self.username_input.setPlaceholderText("Username / Email")
         self.password_input = QLineEdit()
-        self.password_input.setPlaceholderText("Password")
         self.password_input.setEchoMode(QLineEdit.Password)
-        save_btn = QPushButton("Save Password")
-        save_btn.setStyleSheet("background:lightgreen; color:black; font-weight:bold;")
+
+        save_btn = QPushButton("Save Securely")
         save_btn.clicked.connect(self.save_ui)
+
         save_layout.addRow("Platform:", self.platform_input)
         save_layout.addRow("Username:", self.username_input)
         save_layout.addRow("Password:", self.password_input)
         save_layout.addRow(save_btn)
+
         save_group.setLayout(save_layout)
-        main_layout.addWidget(save_group)
+        layout.addWidget(save_group)
 
-        # ---------------- RESULT ----------------
-        self.result = QLabel("")
-        self.result.setStyleSheet("color:lightgreen; font-weight:bold;")
-        main_layout.addWidget(self.result)
-
-        # ---------------- PASSWORD TABLE ----------------
-        table_group = QGroupBox("Saved Passwords")
-        table_group.setStyleSheet(
-            "QGroupBox {color:cyan; font-weight:bold; border:1px solid cyan; border-radius:5px; padding:10px;}"
-        )
+        # ---------- Table ----------
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels([
-            "Platform", "Username", "Strength", "Rating", "Entropy", "Crack Time"
-        ])
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setStyleSheet(
-            "QTableWidget {background:#222; color:white; gridline-color:cyan;} QHeaderView::section {background:cyan; color:black; font-weight:bold;}"
+        self.table.setHorizontalHeaderLabels(
+            ["Platform", "Username", "Strength", "Rating", "Entropy", "Crack Time"]
         )
-        table_layout = QVBoxLayout()
-        table_layout.addWidget(self.table)
-        table_group.setLayout(table_layout)
-        main_layout.addWidget(table_group)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table)
 
         self.load_table()
 
-    # ================= UI FUNCTIONS =================
+    # ================= UI =================
     def generate_ui(self):
-        length_text = self.gen_length.text()
-        length = int(length_text) if length_text.isdigit() else 12
+        length = int(self.length_input.text()) if self.length_input.text().isdigit() else 12
         pwd = generate_password(length)
-        self.gen_pwd_display.setText(pwd)
+        self.generated_pwd.setText(pwd)
 
     def check_ui(self):
-        pwd = self.str_pwd_input.text()
-        if not pwd: return
+        pwd = self.str_input.text()
+        if not pwd:
+            return
+
         strength, rating, color = check_strength(pwd)
         entropy = calculate_entropy(pwd)
         crack = estimate_crack_time(entropy)
-        self.str_result.setText(
-            f"Strength: {strength} | Rating: {rating}/5 | Entropy: {entropy} | Crack: {crack}"
+
+        self.str_progress.setValue(rating)
+        self.str_label.setText(
+            f"{strength} ({rating}/5) | Entropy: {entropy} | Crack Time: {crack}"
         )
-        self.str_result.setStyleSheet(f"color:{color}; font-weight:bold;")
+        self.str_label.setStyleSheet(f"color:{color}; font-weight:bold;")
 
     def save_ui(self):
         platform = self.platform_input.text().strip()
         username = self.username_input.text().strip()
         password = self.password_input.text()
+
         if not platform or not username or not password:
-            QMessageBox.warning(self, "Error", "All fields must be filled")
+            QMessageBox.warning(self, "Error", "All fields required")
             return
+
         strength, rating, _ = check_strength(password)
         entropy = calculate_entropy(password)
         crack = estimate_crack_time(entropy)
+
         data = load_data()
         data.append({
             "platform": platform,
@@ -210,11 +207,13 @@ class PasswordManagerWidget(QWidget):
             "entropy": entropy,
             "crack_time": crack
         })
+
         save_data(data)
+
         self.platform_input.clear()
         self.username_input.clear()
         self.password_input.clear()
-        self.result.setText(f"✔ Password for {platform} saved securely")
+
         self.load_table()
 
     def load_table(self):

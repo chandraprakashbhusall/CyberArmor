@@ -1,248 +1,540 @@
-# Form/login.py
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QStackedWidget, QGraphicsDropShadowEffect, QFrame, QMessageBox
-)
-from PyQt5.QtGui import QFont, QCursor, QColor
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import *
+from PyQt5.QtCore import *
+
 import db
+import smtplib
+from email.message import EmailMessage
+import random
+
+
+SMTP_EMAIL="cyberarmor.np@gmail.com"
+SMTP_PASSWORD="kadz njjf psyw onvq"
+
+
+# ================= ADMIN LOGIN =================
+
+ADMIN_EMAIL="cyberarmor.np@gmail.com"
+ADMIN_PASS="cyberarmor"
+
+
+# ================= PASSWORD FIELD =================
+
+class PasswordEdit(QLineEdit):
+
+    def __init__(self):
+        super().__init__()
+
+        self.setEchoMode(QLineEdit.Password)
+
+        self.eye=QToolButton(self)
+        self.eye.setText("👁")
+        self.eye.clicked.connect(self.toggle)
+        self.eye.setCursor(Qt.PointingHandCursor)
+        self.eye.setStyleSheet("border:none;font-size:18px;")
+
+
+    def resizeEvent(self,e):
+
+        self.eye.move(self.width()-32,8)
+
+
+    def toggle(self):
+
+        if self.echoMode()==QLineEdit.Password:
+            self.setEchoMode(QLineEdit.Normal)
+        else:
+            self.setEchoMode(QLineEdit.Password)
+
+
+
+# ================= LOGIN THREAD =================
+
+class LoginWorker(QThread):
+
+    finished=pyqtSignal(object)
+
+    def __init__(self,email,password):
+
+        super().__init__()
+
+        self.email=email
+        self.password=password
+
+
+    def run(self):
+
+        # ✅ ADMIN LOGIN FIRST
+        if self.email==ADMIN_EMAIL and self.password==ADMIN_PASS:
+            self.finished.emit("ADMIN")
+            return
+
+        # Normal user login
+        row=db.check_user(self.email,self.password)
+
+        self.finished.emit(row)
+
+
+
+
+# ================= EMAIL THREAD =================
+
+class EmailWorker(QThread):
+
+    finished=pyqtSignal(bool)
+
+    def __init__(self,parent,email,otp,mode):
+
+        super().__init__()
+
+        self.parent=parent
+        self.email=email
+        self.otp=otp
+        self.mode=mode
+
+    def run(self):
+
+        ok=self.parent._send_email(
+            self.email,
+            self.otp,
+            self.mode
+        )
+
+        self.finished.emit(ok)
+
+
+
+
+# ================= AUTH WINDOW =================
 
 class AuthWindow(QWidget):
-    login_successful = pyqtSignal(tuple)
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("🛡️ CyberArmor – Modern Access")
-        self.setMinimumSize(1000, 700)
-        self.resize(1100, 720)
-        self.setStyleSheet("background:#0b0b0b; color:white;")
-        self.init_ui()
+    login_successful=pyqtSignal(object)
 
-    def init_ui(self):
-        root = QHBoxLayout(self)
-        root.setContentsMargins(0,0,0,0)
-        root.setSpacing(0)
+    def __init__(self):
 
-        # ---------------- LEFT SPLASH ----------------
-        left_panel = QFrame()
-        left_panel.setStyleSheet(
-            "background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #0b6fd6, stop:1 #3a87f8);"
-        )
-        left_panel.setMinimumWidth(450)
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(50,50,50,50)
-        left_layout.setSpacing(20)
+        super().__init__()
 
-        title = QLabel("🛡️ CyberArmor")
-        title.setFont(QFont("Segoe UI", 32, QFont.Bold))
-        title.setStyleSheet("color:white; letter-spacing:2px;")
-        left_layout.addWidget(title)
+        self.resize(1300,800)
 
-        tagline = QLabel("AI‑Powered Cybersecurity Platform\nProtecting your digital world.")
-        tagline.setFont(QFont("Segoe UI", 14))
-        tagline.setStyleSheet("color:white;")
-        tagline.setWordWrap(True)
-        left_layout.addWidget(tagline)
+        self.setWindowTitle("CyberArmor")
 
-        # Illustration placeholder
-        illustration = QLabel()
-        illustration.setStyleSheet(
-            "background: rgba(255,255,255,0.1); border-radius:15px;"
-        )
-        illustration.setMinimumHeight(300)
-        illustration.setAlignment(Qt.AlignCenter)
-        illustration.setText("📡\nNetwork & Security Dashboard")
-        illustration.setFont(QFont("Segoe UI", 18))
-        left_layout.addWidget(illustration)
-        left_layout.addStretch()
+        self.setStyleSheet("""
 
-        root.addWidget(left_panel)
+        QWidget{
+        background:#020617;
+        color:white;
+        font-family:Segoe UI;
+        }
 
-        # ---------------- RIGHT CARD ----------------
-        right_panel = QFrame()
-        right_panel.setStyleSheet("background:#111214;")
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(50,50,50,50)
-        right_layout.setSpacing(20)
+        QFrame#card{
+        background:#0f172a;
+        border-radius:20px;
+        }
 
-        # Card Frame
-        card = QFrame()
-        card.setStyleSheet(
-            "background:#1c1c1c; border-radius:20px;"
-        )
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(40,40,40,40)
-        card_layout.setSpacing(20)
+        QLineEdit{
+        padding:14px;
+        border-radius:8px;
+        border:2px solid #1e293b;
+        background:#020617;
+        font-size:16px;
+        }
 
-        # Tab buttons
-        tab_wrap = QHBoxLayout()
-        self.btn_login_tab = QPushButton("Login")
-        self.btn_register_tab = QPushButton("Register")
-        for b in (self.btn_login_tab, self.btn_register_tab):
-            b.setCursor(QCursor(Qt.PointingHandCursor))
-            b.setCheckable(True)
-            b.setMinimumHeight(40)
-            b.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        self.btn_login_tab.setChecked(True)
-        self.btn_login_tab.clicked.connect(lambda: self.switch_tab(0))
-        self.btn_register_tab.clicked.connect(lambda: self.switch_tab(1))
-        tab_wrap.addWidget(self.btn_login_tab)
-        tab_wrap.addWidget(self.btn_register_tab)
-        card_layout.addLayout(tab_wrap)
+        QLineEdit:focus{
+        border:2px solid #06b6d4;
+        }
 
-        # Stacked Widget
-        self.stack = QStackedWidget()
-        self.login_page = self.build_login_page()
-        self.register_page = self.build_register_page()
-        self.stack.addWidget(self.login_page)
-        self.stack.addWidget(self.register_page)
-        card_layout.addWidget(self.stack)
+        QPushButton{
+        padding:14px;
+        border-radius:8px;
+        background:#06b6d4;
+        font-size:16px;
+        font-weight:bold;
+        }
 
-        right_layout.addWidget(card)
-        right_layout.addStretch()
-        root.addWidget(right_panel)
+        QPushButton:hover{
+        background:#0891b2;
+        }
 
-        self.update_tabs()
+        QLabel#link{
+        color:#22d3ee;
+        font-size:14px;
+        }
 
-    # ---------------- LOGIN / REGISTER PAGES ----------------
-    def build_login_page(self):
-        w = QFrame()
-        layout = QVBoxLayout(w)
-        layout.setSpacing(15)
+        QLabel#link:hover{
+        text-decoration:underline;
+        }
 
-        lbl = QLabel("Welcome Back")
-        lbl.setFont(QFont("Segoe UI", 20, QFont.Bold))
-        layout.addWidget(lbl)
+        """)
 
-        sub = QLabel("Access your cybersecurity dashboard")
-        sub.setStyleSheet("color:#a0a0a0;")
-        layout.addWidget(sub)
+        self.initUI()
 
-        self.login_email = QLineEdit()
+        self.otp=None
+
+
+
+# ================= UI =================
+
+    def initUI(self):
+
+        root=QHBoxLayout(self)
+
+        root.setContentsMargins(40,40,40,40)
+
+        root.setSpacing(40)
+
+
+
+# LEFT PANEL
+
+        left=QFrame()
+
+        left.setFixedWidth(520)
+
+        left.setStyleSheet("""
+
+        background:qlineargradient(
+        x1:0,y1:0,x2:1,y2:1,
+        stop:0 #0f172a,
+        stop:1 #020617);
+
+        border-radius:20px;
+
+        """)
+
+        L=QVBoxLayout(left)
+
+
+
+        icon=QLabel("🛡")
+
+        icon.setFont(QFont("Segoe UI",95))
+
+        icon.setAlignment(Qt.AlignCenter)
+
+
+
+        title=QLabel("CyberArmor")
+
+        title.setFont(QFont("Segoe UI",35,QFont.Bold))
+
+        title.setAlignment(Qt.AlignCenter)
+
+
+
+        sub=QLabel("AI Cybersecurity Platform")
+
+        sub.setAlignment(Qt.AlignCenter)
+
+        sub.setStyleSheet("color:#94a3b8;font-size:18px")
+
+
+
+        info=QLabel("""
+
+✔ Secure Login
+✔ OTP Verification
+✔ Encrypted Passwords
+✔ AI Protection
+
+""")
+
+        info.setAlignment(Qt.AlignCenter)
+
+        info.setStyleSheet("color:#22d3ee;font-size:16px")
+
+
+        L.addStretch()
+
+        L.addWidget(icon)
+
+        L.addWidget(title)
+
+        L.addWidget(sub)
+
+        L.addSpacing(20)
+
+        L.addWidget(info)
+
+        L.addStretch()
+
+
+        root.addWidget(left)
+
+
+
+# RIGHT PANEL
+
+        card=QFrame()
+
+        card.setObjectName("card")
+
+        card.setMinimumWidth(520)
+
+        layout=QVBoxLayout(card)
+
+
+        self.stack=QStackedWidget()
+
+        self.stack.addWidget(self.loginPage())
+
+        self.stack.addWidget(self.registerPage())
+
+        layout.addWidget(self.stack)
+
+
+        root.addWidget(card,1)
+
+
+
+# ================= LOGIN PAGE =================
+
+    def loginPage(self):
+
+        w=QWidget()
+
+        L=QVBoxLayout(w)
+
+
+        title=QLabel("Login")
+
+        title.setFont(QFont("Segoe UI",32,QFont.Bold))
+
+        L.addWidget(title)
+
+
+        self.login_email=QLineEdit()
         self.login_email.setPlaceholderText("Email")
-        self.login_email.setStyleSheet(self.input_box())
-        layout.addWidget(self.login_email)
 
-        self.login_password = QLineEdit()
-        self.login_password.setPlaceholderText("Password")
-        self.login_password.setEchoMode(QLineEdit.Password)
-        self.login_password.setStyleSheet(self.input_box())
-        layout.addWidget(self.login_password)
+        L.addWidget(self.login_email)
 
-        btn = QPushButton("Secure Login")
-        btn.setStyleSheet(self.action_btn())
+
+        self.login_pass=PasswordEdit()
+        self.login_pass.setPlaceholderText("Password")
+
+        L.addWidget(self.login_pass)
+
+
+        btn=QPushButton("Login")
         btn.clicked.connect(self.login)
-        layout.addWidget(btn)
+
+        L.addWidget(btn)
+
+
+        forgot=QLabel("Forgot Password?")
+        forgot.setObjectName("link")
+        forgot.mousePressEvent=lambda e:self.forgot_password()
+
+        L.addWidget(forgot)
+
+
+        create=QLabel("Don't have account? Create account")
+        create.setObjectName("link")
+        create.mousePressEvent=lambda e:self.stack.setCurrentIndex(1)
+
+        L.addWidget(create)
+
+
+        L.addStretch()
 
         return w
 
-    def build_register_page(self):
-        w = QFrame()
-        layout = QVBoxLayout(w)
-        layout.setSpacing(15)
 
-        lbl = QLabel("Create Account")
-        lbl.setFont(QFont("Segoe UI", 20, QFont.Bold))
-        layout.addWidget(lbl)
 
-        sub = QLabel("Protect your digital identity")
-        sub.setStyleSheet("color:#a0a0a0;")
-        layout.addWidget(sub)
 
-        self.reg_user = QLineEdit()
-        self.reg_user.setPlaceholderText("Username")
-        self.reg_user.setStyleSheet(self.input_box())
-        layout.addWidget(self.reg_user)
+# ================= LOGIN =================
 
-        self.reg_email = QLineEdit()
-        self.reg_email.setPlaceholderText("Email")
-        self.reg_email.setStyleSheet(self.input_box())
-        layout.addWidget(self.reg_email)
-
-        self.reg_pass = QLineEdit()
-        self.reg_pass.setPlaceholderText("Password")
-        self.reg_pass.setEchoMode(QLineEdit.Password)
-        self.reg_pass.setStyleSheet(self.input_box())
-        layout.addWidget(self.reg_pass)
-
-        self.reg_confirm = QLineEdit()
-        self.reg_confirm.setPlaceholderText("Confirm Password")
-        self.reg_confirm.setEchoMode(QLineEdit.Password)
-        self.reg_confirm.setStyleSheet(self.input_box())
-        layout.addWidget(self.reg_confirm)
-
-        btn = QPushButton("Create & Login")
-        btn.setStyleSheet(self.action_btn("#28a745"))
-        btn.clicked.connect(self.register_and_login)
-        layout.addWidget(btn)
-
-        return w
-
-    # ---------------- TAB LOGIC ----------------
-    def switch_tab(self, index):
-        self.stack.setCurrentIndex(index)
-        self.update_tabs()
-
-    def update_tabs(self):
-        active = self.stack.currentIndex()
-        self.btn_login_tab.setChecked(active == 0)
-        self.btn_register_tab.setChecked(active == 1)
-
-        self.btn_login_tab.setStyleSheet(
-            self.tab_btn(active == 0)
-        )
-        self.btn_register_tab.setStyleSheet(
-            self.tab_btn(active == 1)
-        )
-
-    # ---------------- LOGIC ----------------
     def login(self):
-        email = self.login_email.text().strip()
-        pw = self.login_password.text().strip()
-        row = db.check_user(email, pw)
+
+        worker=LoginWorker(
+            self.login_email.text(),
+            self.login_pass.text()
+        )
+
+        worker.finished.connect(self.on_login)
+
+        worker.start()
+
+        self.worker=worker
+
+
+
+    def on_login(self,row):
+
+        # ADMIN LOGIN
+        if row=="ADMIN":
+
+            QMessageBox.information(self,"Admin","Admin Login Successful")
+
+            self.login_successful.emit("ADMIN")
+
+            return
+
+
+        # USER LOGIN
         if row:
-            QMessageBox.information(self, "Success", f"Welcome {row[1]} ❤️")
+
             self.login_successful.emit(row)
-            self.close()
+
         else:
-            QMessageBox.warning(self, "Error", "Invalid credentials")
 
-    def register_and_login(self):
-        u = self.reg_user.text().strip()
-        e = self.reg_email.text().strip()
-        p = self.reg_pass.text().strip()
-        c = self.reg_confirm.text().strip()
-        if not u or not e or not p or p != c:
-            QMessageBox.warning(self, "Error", "Invalid details")
-            return
-        if not db.add_user(u, e, p):
-            QMessageBox.warning(self, "Error", "User exists")
-            return
-        row = db.check_user(e, p)
-        self.login_successful.emit(row)
-        self.close()
+            QMessageBox.warning(self,"Error","Invalid Login")
 
-    # ---------------- STYLES ----------------
-    def input_box(self):
-        return (
-            "padding:12px;font-size:14px;border-radius:8px;"
-            "background:#222227;color:white;border:1px solid #333337;"
-        )
 
-    def action_btn(self, color="#0b84d6"):
-        return (
-            f"QPushButton{{padding:12px;font-size:15px;border-radius:10px;"
-            f"background:{color};color:white;font-weight:600;}}"
-            "QPushButton:hover{background:#0a75c2;}"
-        )
 
-    def tab_btn(self, active):
-        if active:
-            return (
-                "QPushButton{background:#0b84d6;color:white;font-weight:600;"
-                "border:none;border-radius:22px;padding:8px 28px;}"
-            )
-        return (
-            "QPushButton{background:transparent;color:#cbd5d9;"
-            "border:none;padding:8px 28px;}"
-        )
+
+# ================= REGISTER =================
+
+    def registerPage(self):
+
+        w=QWidget()
+
+        L=QVBoxLayout(w)
+
+
+        title=QLabel("Create Account")
+
+        title.setFont(QFont("Segoe UI",32,QFont.Bold))
+
+        L.addWidget(title)
+
+
+        self.reg_user=QLineEdit()
+        self.reg_user.setPlaceholderText("Username")
+
+        L.addWidget(self.reg_user)
+
+
+        self.reg_email=QLineEdit()
+        self.reg_email.setPlaceholderText("Email")
+
+        L.addWidget(self.reg_email)
+
+
+        self.reg_pass=PasswordEdit()
+        self.reg_pass.setPlaceholderText("Password")
+
+        L.addWidget(self.reg_pass)
+
+
+        btn=QPushButton("Register")
+        btn.clicked.connect(self.send_register_otp)
+
+        L.addWidget(btn)
+
+
+        back=QLabel("Already have account? Login")
+        back.setObjectName("link")
+        back.mousePressEvent=lambda e:self.stack.setCurrentIndex(0)
+
+        L.addWidget(back)
+
+
+        L.addStretch()
+
+        return w
+
+
+
+
+# ================= OTP =================
+
+    def send_register_otp(self):
+
+        self.verify_email=self.reg_email.text()
+
+        self.otp=str(random.randint(100000,999999))
+
+        worker=EmailWorker(self,self.verify_email,self.otp,"register")
+
+        worker.finished.connect(self.register_otp_sent)
+
+        worker.start()
+
+        self.email_worker=worker
+
+
+    def register_otp_sent(self,ok):
+
+        if ok:
+
+            otp=QInputDialog.getText(self,"OTP","Enter OTP")[0]
+
+            if otp==self.otp:
+
+                db.add_user(
+                    self.reg_user.text(),
+                    self.reg_email.text(),
+                    self.reg_pass.text()
+                )
+
+                QMessageBox.information(self,"Success","Account Created")
+
+                self.stack.setCurrentIndex(0)
+
+
+
+
+# ================= RESET =================
+
+    def forgot_password(self):
+
+        self.reset_email=self.login_email.text()
+
+        self.otp=str(random.randint(100000,999999))
+
+        worker=EmailWorker(self,self.reset_email,self.otp,"reset")
+
+        worker.finished.connect(self.reset_otp_sent)
+
+        worker.start()
+
+        self.email_worker=worker
+
+
+    def reset_otp_sent(self,ok):
+
+        if ok:
+
+            otp=QInputDialog.getText(self,"OTP","Enter OTP")[0]
+
+            if otp==self.otp:
+
+                pw=QInputDialog.getText(self,"Password","New Password")[0]
+
+                db.update_password(self.reset_email,pw)
+
+                QMessageBox.information(self,"Success","Password Updated")
+
+
+
+
+# ================= EMAIL =================
+
+    def _send_email(self,email,otp,mode):
+
+        try:
+
+            msg=EmailMessage()
+
+            msg["From"]=SMTP_EMAIL
+            msg["To"]=email
+            msg["Subject"]="CyberArmor OTP"
+
+            msg.set_content(f"Your OTP is {otp}")
+
+            s=smtplib.SMTP_SSL("smtp.gmail.com",465)
+
+            s.login(SMTP_EMAIL,SMTP_PASSWORD)
+
+            s.send_message(msg)
+
+            s.quit()
+
+            return True
+
+        except Exception as e:
+
+            print(e)
+
+            return False
