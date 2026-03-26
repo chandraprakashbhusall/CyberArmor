@@ -12,3 +12,4 @@ speed_history.json
 __pycache__/
 *.pyc
 *.pyo
+falcon.gguf
