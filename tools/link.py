@@ -1,6 +1,11 @@
-import re
-import math
+"""
+CyberArmor – Link Inspector
+Clean version with fixed duplicate code, proper export.
+"""
+
 import json
+import math
+import re
 import socket
 import ssl
 import datetime
@@ -9,493 +14,50 @@ from urllib.parse import urlparse
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit,
     QPushButton, QTextEdit, QHBoxLayout,
-    QFrame, QProgressBar
+    QFrame, QProgressBar, QFileDialog, QMessageBox
 )
-
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 
-from tools import theme
 import db
 
 
-# ----------------------------
+# ──────────────────────────────────────────────
 # TRUSTED DOMAINS
-# ----------------------------
+# ──────────────────────────────────────────────
 
 TRUSTED_DOMAINS = {
-    "google.com": "Google",
-    "youtube.com": "YouTube",
-    "facebook.com": "Facebook",
-    "instagram.com": "Instagram",
-    "github.com": "GitHub",
-    "openai.com": "OpenAI",
-    "tiktok.com": "TikTok",
-    "twitter.com": "Twitter"
+    "google.com": "Google", "youtube.com": "YouTube",
+    "facebook.com": "Facebook", "instagram.com": "Instagram",
+    "github.com": "GitHub", "openai.com": "OpenAI",
+    "tiktok.com": "TikTok", "twitter.com": "Twitter / X",
+    "microsoft.com": "Microsoft", "apple.com": "Apple",
 }
 
 
-# ----------------------------
-# ENTROPY
-# ----------------------------
-
 def url_entropy(url):
-
-    prob = [url.count(c)/len(url) for c in set(url)]
-
-    entropy = -sum([p*math.log2(p) for p in prob])
-
-    return round(entropy,2)
-
-
-# ----------------------------
-# SAFE SSL CHECK
-# ----------------------------
-
-def ssl_check(domain):
-
-    try:
-
-        ctx = ssl.create_default_context()
-
-        with socket.create_connection((domain,443),timeout=4) as sock:
-
-            with ctx.wrap_socket(sock,server_hostname=domain) as ssock:
-
-                cert = ssock.getpeercert()
-
-                issuer = cert.get('issuer')
-
-                return True,f"Valid SSL"
-
-    except Exception as e:
-
-        return False,"No SSL / Invalid SSL"
-
-
-# ----------------------------
-# WORKER THREAD
-# ----------------------------
-
-class LinkScanWorker(QThread):
-
-    finished = pyqtSignal(dict)
-
-    progress = pyqtSignal(int,str)
-
-
-    def __init__(self,url):
-
-        super().__init__()
-
-        self.url=url
-
-
-    def run(self):
-
-        try:
-
-            data={}
-
-            flags=[]
-
-
-            self.progress.emit(5,"Initializing scan...")
-
-
-            url=self.url.strip()
-
-
-            if not re.match(r'^https?://',url):
-
-                url="http://"+url
-
-
-            parsed=urlparse(url)
-
-
-            domain=parsed.netloc.lower()
-
-
-            if ":" in domain:
-                domain=domain.split(":")[0]
-
-
-            parts=domain.split(".")
-
-
-            if len(parts)>=2:
-                base_domain=".".join(parts[-2:])
-            else:
-                base_domain=domain
-
-
-            data["url"]=url
-            data["domain"]=domain
-            data["base_domain"]=base_domain
-            data["timestamp"]=str(datetime.datetime.now())
-
-
-            # ---------------- DOMAIN CHECK
-
-            self.progress.emit(20,"Analyzing domain...")
-
-
-            if re.match(r"^\d{1,3}(\.\d{1,3}){3}$",domain):
-
-                flags.append("Raw IP address used")
-
-
-            if len(parts)>3:
-
-                flags.append("Too many subdomains")
-
-
-            if domain.startswith("xn--"):
-
-                flags.append("Punycode domain")
-
-
-            suspicious_keywords=[
-                "login","secure","verify","update","bank","account"
-            ]
-
-
-            for kw in suspicious_keywords:
-
-                if kw in domain:
-
-                    flags.append(f"Suspicious keyword: {kw}")
-
-
-            # Fake domain check
-
-            for trusted in TRUSTED_DOMAINS:
-
-                if trusted in domain and not domain.endswith(trusted):
-
-                    flags.append(f"Fake look-alike: {trusted}")
-
-
-            # ---------------- SSL CHECK
-
-            self.progress.emit(50,"Checking SSL certificate...")
-
-
-            ssl_ok,ssl_info=ssl_check(base_domain)
-
-            data["ssl"]=ssl_ok
-
-            data["ssl_info"]=ssl_info
-
-
-            # ---------------- ENTROPY
-
-            self.progress.emit(75,"Calculating entropy...")
-
-
-            entropy=url_entropy(url)
-
-            data["entropy"]=entropy
-
-
-            # ---------------- SCORE
-
-            score=len(flags)*20+int(entropy)
-
-            score=min(score,100)
-
-            data["risk_score"]=score
-
-            data["flags"]=flags
-
-
-            self.progress.emit(100,"Scan completed")
-
-
-            # DB save safely
-
-            try:
-                if hasattr(db,"save_link_scan"):
-                    db.save_link_scan(data)
-            except:
-                pass
-
-
-            self.finished.emit(data)
-
-
-        except Exception as e:
-
-            data={
-
-                "url":self.url,
-                "risk_score":100,
-                "flags":[str(e)],
-                "domain":"Error",
-                "base_domain":"Error",
-                "ssl":False,
-                "ssl_info":"Error",
-                "entropy":0
-
-            }
-
-            self.finished.emit(data)
-
-
-
-# ----------------------------
-# WIDGET
-# ----------------------------
-
-class LinkScannerWidget(QWidget):
-
-    def __init__(self):
-
-        super().__init__()
-
-        self.resize(900,650)
-
-        main_layout=QVBoxLayout(self)
-
-        main_layout.setSpacing(20)
-
-
-        title=QLabel("🔗 Advanced Link Security Scanner")
-
-        title.setAlignment(Qt.AlignCenter)
-
-        title.setStyleSheet("font-size:24px;font-weight:bold;")
-
-        main_layout.addWidget(title)
-
-
-        card=QFrame()
-
-        card_layout=QVBoxLayout(card)
-
-        card_layout.setSpacing(15)
-
-
-        row=QHBoxLayout()
-
-        self.input=QLineEdit()
-
-        self.input.setPlaceholderText("Enter URL example.com")
-
-        row.addWidget(self.input)
-
-
-        self.btn=QPushButton("Scan")
-
-        row.addWidget(self.btn)
-
-        card_layout.addLayout(row)
-
-
-        self.progress=QProgressBar()
-
-        card_layout.addWidget(self.progress)
-
-
-        self.result_label=QLabel("Status: -")
-
-        self.result_label.setAlignment(Qt.AlignCenter)
-
-        self.result_label.setStyleSheet("font-size:18px;font-weight:bold;")
-
-        card_layout.addWidget(self.result_label)
-
-
-        self.output=QTextEdit()
-
-        self.output.setReadOnly(True)
-
-        card_layout.addWidget(self.output)
-
-
-        self.export_btn=QPushButton("💾 Export Report")
-
-        self.export_btn.setEnabled(False)
-
-        card_layout.addWidget(self.export_btn)
-
-
-        main_layout.addWidget(card)
-
-
-        self.btn.clicked.connect(self.start_scan)
-
-        self.export_btn.clicked.connect(self.export_result)
-
-
-        self.worker=None
-        self.scan_data=None
-
-
-    # ---------------- START
-
-    def start_scan(self):
-
-        url=self.input.text().strip()
-
-        if not url:
-
-            self.output.append("Enter URL")
-
-            return
-
-
-        self.output.clear()
-
-        self.progress.setValue(0)
-
-        self.result_label.setText("Scanning...")
-
-
-        self.worker=LinkScanWorker(url)
-
-        self.worker.progress.connect(self.update_progress)
-
-        self.worker.finished.connect(self.display_result)
-
-        self.worker.start()
-
-
-    # ---------------- PROGRESS
-
-    def update_progress(self,value,message):
-
-        self.progress.setValue(value)
-
-        self.output.append(message)
-
-
-    # ---------------- RESULT
-
-    def display_result(self,data):
-
-        self.scan_data=data
-
-        score=data["risk_score"]
-
-
-        if score>=70:
-
-            status="🔴 Dangerous"
-            color="red"
-
-        elif score>=40:
-
-            status="🟡 Warning"
-            color="orange"
-
-        else:
-
-            status="🟢 Safe"
-            color="green"
-
-
-        self.result_label.setText(
-            f"{status}  ({score}/100)"
-        )
-
-        self.result_label.setStyleSheet(
-            f"color:{color};font-size:20px;font-weight:bold;"
-        )
-
-
-        self.output.append("\n=== REPORT ===")
-
-        self.output.append(f"Domain: {data['domain']}")
-
-        self.output.append(f"SSL: {data['ssl_info']}")
-
-        self.output.append(f"Entropy: {data['entropy']}")
-
-        self.output.append(f"Score: {score}")
-
-
-        if data["flags"]:
-
-            self.output.append("\nWarnings:")
-
-            for f in data["flags"]:
-
-                self.output.append("• "+f)
-
-        else:
-
-            self.output.append("\nNo threats found")
-
-
-        self.export_btn.setEnabled(True)
-
-
-    # ---------------- EXPORT
-
-    def export_result(self):
-
-        if not self.scan_data:
-            return
-import re
-import math
-import json
-import socket
-import ssl
-import datetime
-from urllib.parse import urlparse
-
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QLineEdit,
-    QPushButton, QTextEdit, QHBoxLayout,
-    QFrame, QProgressBar
-)
-from PyQt5.QtCore import QThread, pyqtSignal, Qt
-
-from tools import theme
-import db
-
-
-# ----------------------------
-# Trusted domains
-# ----------------------------
-TRUSTED_DOMAINS = {
-    "google.com": "Google",
-    "youtube.com": "YouTube",
-    "facebook.com": "Facebook",
-    "instagram.com": "Instagram",
-    "github.com": "GitHub",
-    "openai.com": "OpenAI",
-    "tiktok.com": "TikTok",
-    "twitter.com": "Twitter / X"
-}
-
-
-# ----------------------------
-# UTILS
-# ----------------------------
-def url_entropy(url):
-    prob = [url.count(c)/len(url) for c in set(url)]
-    entropy = -sum([p*math.log2(p) for p in prob])
-    return round(entropy, 2)
+    if not url:
+        return 0.0
+    prob = [url.count(c) / len(url) for c in set(url)]
+    return round(-sum(p * math.log2(p) for p in prob if p > 0), 2)
 
 
 def ssl_check(domain):
     try:
         ctx = ssl.create_default_context()
-        with ctx.wrap_socket(socket.socket(), server_hostname=domain) as s:
-            s.settimeout(3)
-            s.connect((domain, 443))
-            cert = s.getpeercert()
-            issuer = cert.get('issuer')
-            return True, f"Valid SSL (Issuer: {issuer})"
-    except:
-        return False, "Invalid / No SSL certificate"
+        with socket.create_connection((domain, 443), timeout=4) as raw:
+            with ctx.wrap_socket(raw, server_hostname=domain) as ssock:
+                cert   = ssock.getpeercert()
+                issuer = dict(x[0] for x in cert.get("issuer", []))
+                org    = issuer.get("organizationName", "Unknown CA")
+                return True, f"Valid SSL (Issued by: {org})"
+    except Exception:
+        return False, "No SSL / Invalid certificate"
 
 
-# ----------------------------
-# WORKER THREAD
-# ----------------------------
+# ──────────────────────────────────────────────
+# WORKER
+# ──────────────────────────────────────────────
+
 class LinkScanWorker(QThread):
     finished = pyqtSignal(dict)
     progress = pyqtSignal(int, str)
@@ -505,202 +67,259 @@ class LinkScanWorker(QThread):
         self.url = url
 
     def run(self):
-        data = {"url": self.url, "timestamp": str(datetime.datetime.now())}
         flags = []
+        data  = {
+            "url":       self.url,
+            "timestamp": str(datetime.datetime.now()),
+        }
 
-        self.progress.emit(10, "Initializing scan...")
+        try:
+            self.progress.emit(5, "Initializing scan...")
 
-        url = self.url
-        if not re.match(r'^https?://', url):
-            url = "http://" + url
+            url = self.url.strip()
+            if not re.match(r"^https?://", url):
+                url = "http://" + url
 
-        parsed = urlparse(url)
-        domain = parsed.netloc.lower()
-        parts = domain.split(".")
-        base_domain = ".".join(parts[-2:]) if len(parts) >= 2 else domain
+            parsed     = urlparse(url)
+            domain     = parsed.netloc.lower().split(":")[0]
+            parts      = domain.split(".")
+            base_domain = ".".join(parts[-2:]) if len(parts) >= 2 else domain
 
-        data["domain"] = domain
-        data["base_domain"] = base_domain
+            data.update({"domain": domain, "base_domain": base_domain})
 
-        self.progress.emit(30, f"Checking domain: {domain}")
+            # ── Domain checks ──
+            self.progress.emit(20, f"Analyzing domain: {domain}")
 
-        # IP check
-        if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", domain):
-            flags.append("Raw IP address used")
+            if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", domain):
+                flags.append("Raw IP address — no domain name")
 
-        # Subdomain check
-        if len(parts) > 3:
-            flags.append("Too many subdomains")
+            if len(parts) > 4:
+                flags.append(f"Too many subdomains ({len(parts)-2} levels)")
 
-        # Punycode
-        if domain.startswith("xn--"):
-            flags.append("Punycode domain detected")
+            if domain.startswith("xn--"):
+                flags.append("Punycode (internationalized) domain")
 
-        # Suspicious keywords
-        suspicious_keywords = ["login","secure","verify","update","bank","account"]
-        for kw in suspicious_keywords:
-            if kw in domain:
-                flags.append(f"Suspicious keyword: {kw}")
+            suspicious_kw = ["login", "secure", "verify", "update", "bank",
+                             "account", "confirm", "paypal", "wallet"]
+            for kw in suspicious_kw:
+                if kw in domain:
+                    flags.append(f"Suspicious keyword in domain: '{kw}'")
 
-        # Look-alike check
-        for trusted in TRUSTED_DOMAINS:
-            if trusted in domain and not domain.endswith(trusted):
-                flags.append(f"Fake look-alike of {trusted}")
+            for trusted, name in TRUSTED_DOMAINS.items():
+                if trusted in domain and not domain.endswith(trusted):
+                    flags.append(f"Possible fake look-alike of {name} ({trusted})")
 
-        self.progress.emit(60, "Checking SSL certificate...")
+            # ── SSL ──
+            self.progress.emit(55, "Checking SSL certificate...")
+            ssl_ok, ssl_info = ssl_check(base_domain)
+            if not ssl_ok:
+                flags.append("No valid SSL certificate")
+            data.update({"ssl": ssl_ok, "ssl_info": ssl_info})
 
-        ssl_ok, ssl_info = ssl_check(base_domain)
-        data["ssl"] = ssl_ok
-        data["ssl_info"] = ssl_info
+            # ── Entropy ──
+            self.progress.emit(80, "Calculating URL entropy...")
+            entropy = url_entropy(url)
+            data["entropy"] = entropy
+            if entropy > 4.5:
+                flags.append(f"High URL entropy ({entropy}) — possible obfuscation")
 
-        entropy = url_entropy(url)
-        data["entropy"] = entropy
+            # ── Score ──
+            score = min(len(flags) * 20 + max(0, int(entropy) - 3) * 5, 100)
+            data.update({"risk_score": score, "flags": flags})
 
-        score = len(flags) * 20 + int(entropy)
-        score = min(score, 100)
+            self.progress.emit(100, "Scan complete.")
 
-        data["risk_score"] = score
-        data["flags"] = flags
+            # Save to DB
+            try:
+                db.save_link_scan(data)
+            except Exception:
+                pass
 
-        self.progress.emit(100, "Scan completed")
+        except Exception as e:
+            data.update({"risk_score": 100, "flags": [str(e)],
+                         "domain": "Error", "base_domain": "Error",
+                         "ssl": False, "ssl_info": "Error", "entropy": 0})
 
         self.finished.emit(data)
-        db.save_link_scan(data)
 
 
-# ----------------------------
+# ──────────────────────────────────────────────
 # WIDGET
-# ----------------------------
+# ──────────────────────────────────────────────
+
 class LinkScannerWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self.resize(900, 650)
-        self.setStyleSheet(theme.get_stylesheet())
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setSpacing(20)
+        self.scan_data = None
 
-        # ===== TITLE =====
-        title = QLabel("🔗 Advanced Link Security Scanner")
+        main = QVBoxLayout(self)
+        main.setContentsMargins(28, 22, 28, 22)
+        main.setSpacing(18)
+
+        title = QLabel("🔗  Advanced Link Security Scanner")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size:24px; font-weight:bold;")
-        main_layout.addWidget(title)
+        title.setStyleSheet("font-size: 20px; font-weight: bold; background: transparent;")
+        main.addWidget(title)
 
-        # ===== CARD =====
-        card = QFrame()
-        card_layout = QVBoxLayout(card)
-        card_layout.setSpacing(15)
+        # Control row
+        ctrl = QFrame()
+        ctrl.setStyleSheet("QFrame { background: #111827; border-radius: 12px; border: 1px solid #1e293b; }")
+        ctrl_layout = QHBoxLayout(ctrl)
+        ctrl_layout.setContentsMargins(16, 12, 16, 12)
+        ctrl_layout.setSpacing(12)
 
-        # URL input row
-        row = QHBoxLayout()
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("Enter URL (example.com)")
-        row.addWidget(self.input)
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("Enter URL to inspect (e.g. example.com or https://site.com)")
+        self.url_input.setFixedHeight(42)
+        self.url_input.returnPressed.connect(self._start_scan)
+        ctrl_layout.addWidget(self.url_input, 1)
 
-        self.btn = QPushButton("Scan")
-        row.addWidget(self.btn)
+        self.scan_btn = QPushButton("🔍  Scan")
+        self.scan_btn.setFixedHeight(42)
+        self.scan_btn.setFixedWidth(120)
+        self.scan_btn.clicked.connect(self._start_scan)
+        self.scan_btn.setStyleSheet("""
+        QPushButton {
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #00BCD4,stop:1 #0097a7);
+            border: none; border-radius: 10px; color: black; font-weight: bold;
+        }
+        QPushButton:hover { background: #26C6DA; }
+        """)
+        ctrl_layout.addWidget(self.scan_btn)
 
-        card_layout.addLayout(row)
+        self.export_btn = QPushButton("💾  Export")
+        self.export_btn.setFixedHeight(42)
+        self.export_btn.setFixedWidth(110)
+        self.export_btn.setEnabled(False)
+        self.export_btn.clicked.connect(self._export)
+        self.export_btn.setStyleSheet("""
+        QPushButton {
+            background: #1e293b; border: 1px solid #334155;
+            border-radius: 10px; color: #94a3b8; font-weight: bold;
+        }
+        QPushButton:hover { background: #334155; color: #e2e8f0; }
+        QPushButton:disabled { color: #4b5563; }
+        """)
+        ctrl_layout.addWidget(self.export_btn)
 
-        # Progress bar
+        main.addWidget(ctrl)
+
+        # Progress + status
         self.progress = QProgressBar()
         self.progress.setMaximum(100)
-        card_layout.addWidget(self.progress)
+        self.progress.setFixedHeight(8)
+        main.addWidget(self.progress)
 
-        # Result badge
-        self.result_label = QLabel("Status: -")
-        self.result_label.setAlignment(Qt.AlignCenter)
-        self.result_label.setStyleSheet("font-size:18px; font-weight:bold;")
-        card_layout.addWidget(self.result_label)
+        self.status_lbl = QLabel("Status: —")
+        self.status_lbl.setAlignment(Qt.AlignCenter)
+        self.status_lbl.setStyleSheet("font-size: 18px; font-weight: bold; background: transparent;")
+        main.addWidget(self.status_lbl)
 
         # Output
         self.output = QTextEdit()
         self.output.setReadOnly(True)
-        card_layout.addWidget(self.output)
-
-        # Export button
-        self.export_btn = QPushButton("💾 Export Report")
-        self.export_btn.setEnabled(False)
-        card_layout.addWidget(self.export_btn)
-
-        main_layout.addWidget(card)
+        self.output.setStyleSheet("""
+        QTextEdit {
+            background: #060c18;
+            border: 1px solid #1e293b;
+            border-radius: 10px;
+            padding: 12px;
+            font-family: "Courier New", monospace;
+            font-size: 12px;
+            color: #7dd3fc;
+        }
+        """)
+        main.addWidget(self.output)
 
         self.worker = None
-        self.scan_data = None
 
-        self.btn.clicked.connect(self.start_scan)
-        self.export_btn.clicked.connect(self.export_result)
+    # ══════════════════════════════════════════
+    # ACTIONS
+    # ══════════════════════════════════════════
 
-    # ----------------------------
-    def start_scan(self):
-        url = self.input.text().strip()
+    def _start_scan(self):
+        url = self.url_input.text().strip()
         if not url:
-            self.output.append("⚠️ Please enter a URL.")
+            QMessageBox.warning(self, "Input Required", "Please enter a URL.")
             return
 
         self.output.clear()
         self.progress.setValue(0)
-        self.result_label.setText("Scanning...")
-        self.result_label.setStyleSheet("font-weight:bold;")
+        self.status_lbl.setText("Scanning...")
+        self.status_lbl.setStyleSheet("font-size: 18px; font-weight: bold; background: transparent; color: #94a3b8;")
+        self.scan_btn.setEnabled(False)
+        self.export_btn.setEnabled(False)
 
         self.worker = LinkScanWorker(url)
-        self.worker.progress.connect(self.update_progress)
-        self.worker.finished.connect(self.display_result)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.finished.connect(self._on_result)
         self.worker.start()
 
-    def update_progress(self, value, message):
+    def _on_progress(self, value, msg):
         self.progress.setValue(value)
-        self.output.append(message)
+        self.output.append(f"  {msg}")
 
-    def display_result(self, data):
+    def _on_result(self, data):
         self.scan_data = data
-
-        score = data["risk_score"]
+        score = data.get("risk_score", 0)
 
         if score >= 70:
-            status = "🔴 Dangerous"
-            color = "red"
+            status, color = "🔴  DANGEROUS", "#ef4444"
         elif score >= 40:
-            status = "🟡 Warning"
-            color = "orange"
+            status, color = "🟡  WARNING", "#f59e0b"
         else:
-            status = "🟢 Safe"
-            color = "green"
+            status, color = "🟢  SAFE", "#10b981"
 
-        self.result_label.setText(f"Status: {status} ({score}/100)")
-        self.result_label.setStyleSheet(
-            f"color:{color}; font-size:20px; font-weight:bold;"
-        )
+        self.status_lbl.setText(f"{status}  —  {score}/100")
+        self.status_lbl.setStyleSheet(f"font-size: 18px; font-weight: bold; background: transparent; color: {color};")
 
-        self.output.append("\n=== Detailed Report ===")
-        self.output.append(f"Domain: {data['domain']}")
-        self.output.append(f"Base Domain: {data['base_domain']}")
-        self.output.append(f"SSL: {data['ssl_info']}")
-        self.output.append(f"Entropy: {data['entropy']}")
-        self.output.append(f"Risk Score: {score}/100")
+        self.output.append(f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔗  LINK INSPECTION REPORT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+URL         : {data.get('url', '—')}
+Domain      : {data.get('domain', '—')}
+Base Domain : {data.get('base_domain', '—')}
+SSL Status  : {data.get('ssl_info', '—')}
+Entropy     : {data.get('entropy', 0)}
+Risk Score  : {score} / 100
+""")
 
-        if data["flags"]:
-            self.output.append("\n⚠️ Security Warnings:")
-            for f in data["flags"]:
-                self.output.append(f" • {f}")
+        flags = data.get("flags", [])
+        if flags:
+            self.output.append("⚠  Security Flags:")
+            for f in flags:
+                self.output.append(f"  • {f}")
         else:
-            self.output.append("\nNo suspicious indicators found.")
+            self.output.append("✅  No suspicious indicators found.")
 
+        self.scan_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
 
-    def export_result(self):
+    def _export(self):
         if not self.scan_data:
             return
 
-        filename = "link_scan_result.json"
-        with open(filename, "w") as f:
-            json.dump(self.scan_data, f, indent=4)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Link Scan Report",
+            f"link_scan_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "JSON Report (*.json);;Text Report (*.txt)"
+        )
+        if not path:
+            return
 
-        self.output.append(f"\n💾 Report saved to {filename}")
+        if path.endswith(".txt"):
+            with open(path, "w") as f:
+                f.write("CyberArmor Link Scan Report\n")
+                f.write(f"URL: {self.scan_data.get('url')}\n")
+                f.write(f"Risk Score: {self.scan_data.get('risk_score')}/100\n")
+                f.write(f"SSL: {self.scan_data.get('ssl_info')}\n\n")
+                f.write("Flags:\n")
+                for flag in self.scan_data.get("flags", []):
+                    f.write(f"  • {flag}\n")
+        else:
+            with open(path, "w") as f:
+                json.dump(self.scan_data, f, indent=4)
 
-        with open("link_report.json","w") as f:
-
-            json.dump(self.scan_data,f,indent=4)
-
-
-        self.output.append("\nSaved link_report.json")
+        QMessageBox.information(self, "Saved", f"✅ Report saved:\n{path}")

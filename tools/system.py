@@ -1,215 +1,158 @@
-import platform
-import psutil
-import socket
-import subprocess
+"""
+CyberArmor – System Security Scanner
+Real scan with export to JSON/TXT.
+"""
+import json, platform, socket, subprocess
 from datetime import datetime
 
+import psutil
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QTextEdit,
-    QPushButton, QFrame, QHBoxLayout, QProgressBar
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
+    QPushButton, QFrame, QProgressBar, QFileDialog, QMessageBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from tools import theme
+from PyQt5.QtGui import QFont
 
-
-# ==========================================================
-# SYSTEM SCAN THREAD
-# ==========================================================
 class SystemScanThread(QThread):
     result_signal = pyqtSignal(dict)
-
     def run(self):
-        result = {}
-        risk_score = 0
-
-        # ---------------- OS INFO ----------------
-        result["os"] = f"{platform.system()} {platform.release()}"
-
-        # ---------------- CPU ----------------
-        cpu = psutil.cpu_percent(interval=1)
-        result["cpu"] = cpu
-        if cpu > 85:
-            risk_score += 1
-
-        # ---------------- RAM ----------------
-        ram = psutil.virtual_memory().percent
-        result["ram"] = ram
-        if ram > 85:
-            risk_score += 1
-
-        # ---------------- DISK ----------------
+        result={}; risk=0
+        result["os"]=f"{platform.system()} {platform.release()} ({platform.machine()})"
+        result["hostname"]=socket.gethostname()
+        cpu=psutil.cpu_percent(interval=1); result["cpu"]=cpu
+        if cpu>85: risk+=1
+        ram=psutil.virtual_memory(); result["ram"]=ram.percent; result["ram_total"]=ram.total
+        if ram.percent>85: risk+=1
         try:
-            disk = psutil.disk_usage('/')
-            result["disk"] = disk.percent
-            if disk.percent > 90:
-                risk_score += 2
-        except:
-            result["disk"] = None
-
-        # ---------------- INTERNET ----------------
+            disk=psutil.disk_usage("/"); result["disk"]=disk.percent; result["disk_free"]=disk.free
+            if disk.percent>90: risk+=2
+        except: result["disk"]=None; result["disk_free"]=None
         try:
-            socket.create_connection(("8.8.8.8", 53), timeout=3)
-            result["internet"] = True
-        except:
-            result["internet"] = False
-            risk_score += 1
-
-        # ---------------- FIREWALL (Linux Only) ----------------
-        firewall_active = None
-        if platform.system() == "Linux":
+            socket.create_connection(("8.8.8.8",53),timeout=3); result["internet"]=True
+        except: result["internet"]=False; risk+=1
+        fw=None
+        if platform.system()=="Linux":
             try:
-                status = subprocess.getoutput("ufw status")
-                firewall_active = "inactive" not in status.lower()
-                if not firewall_active:
-                    risk_score += 2
-            except:
-                firewall_active = None
-
-        result["firewall"] = firewall_active
-
-        # ---------------- FINAL STATUS ----------------
-        if risk_score == 0:
-            overall = "SAFE"
-        elif risk_score <= 2:
-            overall = "WARNING"
-        else:
-            overall = "CRITICAL"
-
-        result["overall"] = overall
-        result["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+                s=subprocess.getoutput("ufw status"); fw="inactive" not in s.lower()
+                if not fw: risk+=2
+            except: pass
+        result["firewall"]=fw
+        result["cpu_count"]=psutil.cpu_count()
+        result["python"]=platform.python_version()
+        # Open ports check
+        open_ports=[]
+        for p in [21,22,23,25,80,443,3306,3389,5900]:
+            try:
+                s=socket.socket(); s.settimeout(0.3)
+                if s.connect_ex(("127.0.0.1",p))==0: open_ports.append(p)
+                s.close()
+            except: pass
+        result["open_ports"]=open_ports
+        if any(p in open_ports for p in [21,23,3389,5900]): risk+=2
+        result["overall"]="SAFE" if risk==0 else ("WARNING" if risk<=3 else "CRITICAL")
+        result["risk_score"]=min(risk*15,100)
+        result["time"]=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.result_signal.emit(result)
 
+def _fmt(n):
+    if n is None: return "Unknown"
+    if n<1024**2: return f"{n/1024:.0f} KB"
+    if n<1024**3: return f"{n/1024**2:.1f} MB"
+    return f"{n/1024**3:.2f} GB"
 
-# ==========================================================
-# MAIN WIDGET
-# ==========================================================
 class SystemSecurityWidget(QWidget):
     def __init__(self):
         super().__init__()
-
-        self.setStyleSheet(theme.get_stylesheet())
-
-        main = QVBoxLayout(self)
-        main.setContentsMargins(40, 30, 40, 30)
-        main.setSpacing(25)
-
-        # ================= TITLE =================
-        title = QLabel("🛡 System Health & Security Check")
+        self._last_result=None
+        main=QVBoxLayout(self)
+        main.setContentsMargins(28,22,28,22); main.setSpacing(18)
+        title=QLabel("💻  System Health & Security Check")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size:26px; font-weight:700;")
+        title.setStyleSheet("font-size:20px;font-weight:bold;background:transparent;")
         main.addWidget(title)
+        # Status card
+        sc=QFrame()
+        sc.setStyleSheet("QFrame{background:#111827;border-radius:14px;border:1px solid #1e293b;}")
+        sl=QVBoxLayout(sc); sl.setContentsMargins(24,18,24,18); sl.setSpacing(12)
+        self.status_lbl=QLabel("Click 'Run Scan' to check your system.")
+        self.status_lbl.setFont(QFont("Segoe UI",14,QFont.Bold)); self.status_lbl.setStyleSheet("background:transparent;")
+        sl.addWidget(self.status_lbl)
+        self.progress=QProgressBar(); self.progress.setMaximum(100); self.progress.setFixedHeight(10); self.progress.setTextVisible(False)
+        sl.addWidget(self.progress); main.addWidget(sc)
+        # Details card
+        dc=QFrame()
+        dc.setStyleSheet("QFrame{background:#111827;border-radius:14px;border:1px solid #1e293b;}")
+        dl=QVBoxLayout(dc); dl.setContentsMargins(20,16,20,16)
+        self.details=QTextEdit(); self.details.setReadOnly(True)
+        self.details.setStyleSheet("QTextEdit{background:#060c18;border:1px solid #1e293b;border-radius:10px;padding:12px;font-family:'Courier New';font-size:12px;color:#7dd3fc;}")
+        dl.addWidget(self.details); main.addWidget(dc)
+        # Buttons
+        br=QHBoxLayout()
+        self.scan_btn=QPushButton("▶  Run System Scan"); self.scan_btn.setFixedHeight(46)
+        self.scan_btn.clicked.connect(self._scan)
+        self.scan_btn.setStyleSheet("QPushButton{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #00BCD4,stop:1 #0097a7);border:none;border-radius:10px;color:black;font-weight:bold;font-size:14px;}QPushButton:hover{background:#26C6DA;}")
+        br.addWidget(self.scan_btn)
+        self.export_btn=QPushButton("💾  Export Report"); self.export_btn.setFixedHeight(46); self.export_btn.setEnabled(False)
+        self.export_btn.clicked.connect(self._export)
+        self.export_btn.setStyleSheet("QPushButton{background:#1e293b;border:1px solid #334155;border-radius:10px;color:#94a3b8;font-weight:bold;}QPushButton:hover{background:#334155;color:#e2e8f0;}QPushButton:disabled{color:#4b5563;}")
+        br.addWidget(self.export_btn); main.addLayout(br)
 
-        # ================= STATUS CARD =================
-        self.status_card = self.create_card("System Status")
-        self.status_label = QLabel("Click scan to check your system health.")
-        self.status_label.setStyleSheet("font-size:16px; font-weight:600;")
-        self.status_card.layout().addWidget(self.status_label)
+    def _scan(self):
+        self.status_lbl.setText("⏳  Scanning system — please wait...")
+        self.status_lbl.setStyleSheet("background:transparent;color:#64748b;")
+        self.progress.setValue(30); self.details.clear()
+        self.scan_btn.setEnabled(False); self.scan_btn.setText("Scanning...")
+        self._thread=SystemScanThread()
+        self._thread.result_signal.connect(self._show_result)
+        self._thread.start()
 
-        self.progress = QProgressBar()
-        self.progress.setValue(0)
-        self.progress.setTextVisible(False)
-        self.status_card.layout().addWidget(self.progress)
-
-        main.addWidget(self.status_card)
-
-        # ================= DETAILS CARD =================
-        self.details_card = self.create_card("Scan Details")
-        self.details_output = QTextEdit()
-        self.details_output.setReadOnly(True)
-        self.details_card.layout().addWidget(self.details_output)
-
-        main.addWidget(self.details_card)
-
-        # ================= BUTTON =================
-        self.scan_btn = QPushButton("Run System Scan")
-        self.scan_btn.setFixedHeight(45)
-        self.scan_btn.clicked.connect(self.start_scan)
-        main.addWidget(self.scan_btn)
-
-        main.addStretch()
-
-    # ==================================================
-    # CARD CONTAINER
-    # ==================================================
-    def create_card(self, title_text):
-        card = QFrame()
-        card.setObjectName("card")
-        card.setStyleSheet("""
-            QFrame#card {
-                border-radius: 12px;
-                padding: 20px;
-                background-color: rgba(255,255,255,0.04);
-            }
-        """)
-        layout = QVBoxLayout(card)
-        layout.setSpacing(15)
-
-        title = QLabel(title_text)
-        title.setStyleSheet("font-size:18px; font-weight:600;")
-        layout.addWidget(title)
-
-        return card
-
-    # ==================================================
-    # START SCAN
-    # ==================================================
-    def start_scan(self):
-        self.status_label.setText("Scanning system... please wait")
-        self.progress.setValue(30)
-        self.details_output.clear()
-
-        self.thread = SystemScanThread()
-        self.thread.result_signal.connect(self.show_result)
-        self.thread.start()
-
-    # ==================================================
-    # SHOW RESULT
-    # ==================================================
-    def show_result(self, data):
-        self.progress.setValue(100)
-
-        overall = data["overall"]
-
-        if overall == "SAFE":
-            self.status_label.setText("🟢 Your system looks safe and healthy.")
-        elif overall == "WARNING":
-            self.status_label.setText("🟡 Minor issues detected. Review details below.")
+    def _show_result(self, d):
+        self._last_result=d
+        self.scan_btn.setEnabled(True); self.scan_btn.setText("▶  Run System Scan")
+        self.progress.setValue(d["risk_score"])
+        ov=d["overall"]
+        if ov=="SAFE":
+            self.status_lbl.setText("🟢  System is SAFE and healthy")
+            self.status_lbl.setStyleSheet("background:transparent;color:#10b981;font-size:14px;font-weight:bold;")
+        elif ov=="WARNING":
+            self.status_lbl.setText("🟡  Minor issues detected — review below")
+            self.status_lbl.setStyleSheet("background:transparent;color:#f59e0b;font-size:14px;font-weight:bold;")
         else:
-            self.status_label.setText("🔴 Security risk detected! Attention required.")
+            self.status_lbl.setText("🔴  CRITICAL — Security risks found!")
+            self.status_lbl.setStyleSheet("background:transparent;color:#ef4444;font-size:14px;font-weight:bold;")
+        ports_str=", ".join(str(p) for p in d["open_ports"]) if d["open_ports"] else "None detected"
+        fw_str=("✅ Active" if d["firewall"] else "❌ INACTIVE — exposing your system") if d["firewall"] is not None else "Not checked (non-Linux)"
+        report=f"""
+📅  Scan Time   : {d['time']}
+🖥  Hostname    : {d['hostname']}
+💻  OS          : {d['os']}
+🐍  Python      : {d['python']}
 
-        # ================= USER FRIENDLY REPORT =================
-        report = f"""
-📅 Scan Time: {data['time']}
+⚙  CPU Usage   : {d['cpu']}%{'  ⚠ HIGH' if d['cpu']>85 else '  ✅ OK'}
+🧠  RAM Usage   : {d['ram']}%  (Total: {_fmt(d['ram_total'])}){'  ⚠ HIGH' if d['ram']>85 else '  ✅ OK'}
+💾  Disk Usage  : {d['disk']}%  (Free: {_fmt(d['disk_free'])}){'  ⚠ ALMOST FULL' if d['disk'] and d['disk']>90 else '  ✅ OK'}
+🌐  Internet    : {'✅ Connected' if d['internet'] else '❌ No connection'}
+🔥  Firewall    : {fw_str}
+🔓  Open Ports  : {ports_str}
 
-💻 Operating System:
-   {data['os']}
-
-⚙ CPU Usage:
-   {data['cpu']}%
-   {"High usage — close heavy apps." if data['cpu'] > 85 else "Normal usage."}
-
-🧠 RAM Usage:
-   {data['ram']}%
-   {"Memory almost full — consider restarting." if data['ram'] > 85 else "Memory usage is healthy."}
-
-💾 Disk Usage:
-   {data['disk']}%
-   {"Disk nearly full — clean unnecessary files." if data['disk'] and data['disk'] > 90 else "Storage space is fine."}
-
-🌐 Internet Connection:
-   {"Connected and working." if data['internet'] else "No internet connection detected."}
+{'─'*50}
+🛡  Recommendations:
+   • Keep your OS and software updated
+   • Use a firewall and keep it enabled
+   • Avoid installing software from unknown sources
+   • Close unnecessary open ports
+   • Use strong passwords with 2FA
 """
+        self.details.setText(report)
+        self.export_btn.setEnabled(True)
 
-        if data["firewall"] is not None:
-            report += f"""
-🔥 Firewall Protection:
-   {"Active and protecting your system." if data['firewall'] else "Firewall is OFF — your system may be exposed."}
-"""
-
-        report += "\n\n🛡 Recommendation:\n"
-        report += " - Keep your system updated.\n"
-        report += " - Avoid installing unknown software.\n"
-        report += " - Use antivirus for extra protection.\n"
-
-        self.details_output.setText(report)
+    def _export(self):
+        if not self._last_result: return
+        path,_=QFileDialog.getSaveFileName(self,"Export System Report",
+            f"system_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}","JSON (*.json);;Text (*.txt)")
+        if not path: return
+        if path.endswith(".txt"):
+            with open(path,"w") as f: f.write(self.details.toPlainText())
+        else:
+            with open(path,"w") as f: json.dump(self._last_result,f,indent=4,default=str)
+        QMessageBox.information(self,"Saved",f"✅ Report saved:\n{path}")

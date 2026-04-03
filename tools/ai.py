@@ -1,258 +1,156 @@
-# tools/ai.py
-import os
-import json
+"""
+CyberArmor – AI Chat (GPT4All)
+Streaming responses, session history, export.
+"""
+import os, json
 from datetime import datetime
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QTextEdit, QLineEdit,
-    QPushButton, QHBoxLayout, QListWidget, QMessageBox,
-    QSplitter
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit,
+    QLineEdit, QPushButton, QListWidget, QMessageBox,
+    QSplitter, QFrame, QFileDialog
 )
+from PyQt5.QtGui import QFont
 
-from tools import theme
-
-# GPT4All
 try:
     from gpt4all import GPT4All
     GPT4ALL_AVAILABLE = True
 except ImportError:
-    GPT4ALL_AVAILABLE = False
-    GPT4All = None
+    GPT4ALL_AVAILABLE = False; GPT4All = None
 
+BTN_PRIMARY="QPushButton{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #00BCD4,stop:1 #0097a7);border:none;border-radius:10px;color:black;font-weight:bold;}QPushButton:hover{background:#26C6DA;}QPushButton:disabled{background:#1e293b;color:#4b5563;}"
+BTN_GHOST="QPushButton{background:#1e293b;border:1px solid #334155;border-radius:10px;color:#94a3b8;font-weight:bold;}QPushButton:hover{background:#334155;color:#e2e8f0;}"
 
-# ================= AI Worker =================
 class AIWorker(QThread):
-    token = pyqtSignal(str)
-    finished = pyqtSignal()
-
-    def __init__(self, model, prompt):
-        super().__init__()
-        self.model = model
-        self.prompt = prompt
-
+    token=pyqtSignal(str); finished=pyqtSignal()
+    def __init__(self,model,prompt):
+        super().__init__(); self.model=model; self.prompt=prompt
     def run(self):
         try:
-            if not self.model:
-                self.token.emit("\n[Model not loaded]\n")
-                self.finished.emit()
-                return
-
-            for chunk in self.model.generate(
-                self.prompt,
-                max_tokens=200,
-                temp=0.3,
-                top_k=40,
-                top_p=0.9,
-                repeat_penalty=1.1,
-                streaming=True
-            ):
+            if not self.model: self.token.emit("\n[Model not loaded]\n"); self.finished.emit(); return
+            for chunk in self.model.generate(self.prompt,max_tokens=300,temp=0.3,
+                top_k=40,top_p=0.9,repeat_penalty=1.1,streaming=True):
                 self.token.emit(chunk)
-
             self.finished.emit()
-
         except Exception as e:
-            self.token.emit(f"\nError: {e}\n")
-            self.finished.emit()
+            self.token.emit(f"\nError: {e}\n"); self.finished.emit()
 
-
-# ================= AI Widget =================
 class AIWidget(QWidget):
     def __init__(self, model_path=None):
         super().__init__()
+        self.model_path=model_path or os.path.abspath("tools/falcon.gguf")
+        self.model=None; self.worker=None
+        self.chat_dir="chat_sessions"; os.makedirs(self.chat_dir,exist_ok=True)
+        self.current_session=None; self.messages=[]
+        self._build_ui(); self._load_model(); self._load_sessions()
 
-        # ❌ NO HARDCODED STYLE HERE
-        # Theme will be controlled globally
+    def _build_ui(self):
+        main=QHBoxLayout(self); main.setContentsMargins(0,0,0,0)
+        splitter=QSplitter(Qt.Horizontal)
+        # Left: chat
+        left=QWidget(); left.setStyleSheet("background:#0a0f1e;")
+        ll=QVBoxLayout(left); ll.setContentsMargins(20,18,12,18); ll.setSpacing(12)
+        title=QLabel("🤖  CyberArmor AI Assistant")
+        title.setFont(QFont("Segoe UI",16,QFont.Bold)); title.setStyleSheet("background:transparent;")
+        ll.addWidget(title)
+        self.chat_area=QTextEdit(); self.chat_area.setReadOnly(True)
+        self.chat_area.setStyleSheet("QTextEdit{background:#060c18;border:1px solid #1e293b;border-radius:10px;padding:12px;font-size:13px;color:#e2e8f0;}")
+        ll.addWidget(self.chat_area)
+        ir=QHBoxLayout(); ir.setSpacing(10)
+        self.input_box=QLineEdit(); self.input_box.setPlaceholderText("Ask about cybersecurity, Linux, networking...")
+        self.input_box.setFixedHeight(44); self.input_box.returnPressed.connect(self._ask)
+        ir.addWidget(self.input_box)
+        self.send_btn=QPushButton("Send"); self.send_btn.setFixedHeight(44); self.send_btn.setFixedWidth(90)
+        self.send_btn.clicked.connect(self._ask); self.send_btn.setStyleSheet(BTN_PRIMARY)
+        ir.addWidget(self.send_btn); ll.addLayout(ir)
+        # Right: sessions
+        right=QWidget(); right.setStyleSheet("background:#070d1a;"); right.setFixedWidth(240)
+        rl=QVBoxLayout(right); rl.setContentsMargins(12,18,16,18); rl.setSpacing(10)
+        hl=QLabel("🗂  Chat History"); hl.setFont(QFont("Segoe UI",12,QFont.Bold)); hl.setStyleSheet("background:transparent;")
+        rl.addWidget(hl)
+        self.session_list=QListWidget()
+        self.session_list.setStyleSheet("QListWidget{background:#0a0f1e;border:1px solid #1e293b;border-radius:8px;}QListWidget::item{padding:8px;color:#94a3b8;}QListWidget::item:selected{color:#00BCD4;background:rgba(0,188,212,0.15);}QListWidget::item:hover{background:#111827;}")
+        self.session_list.itemClicked.connect(self._load_session)
+        rl.addWidget(self.session_list)
+        new_btn=QPushButton("＋  New Chat"); new_btn.setFixedHeight(38); new_btn.clicked.connect(self._new_chat)
+        new_btn.setStyleSheet(BTN_PRIMARY); rl.addWidget(new_btn)
+        exp_btn=QPushButton("💾  Export Chat"); exp_btn.setFixedHeight(38); exp_btn.clicked.connect(self._export)
+        exp_btn.setStyleSheet(BTN_GHOST); rl.addWidget(exp_btn)
+        splitter.addWidget(left); splitter.addWidget(right)
+        splitter.setStretchFactor(0,1); splitter.setStretchFactor(1,0)
+        main.addWidget(splitter)
 
-        self.model_path = model_path or os.path.abspath("tools/falcon.gguf")
-        self.model = None
-        self.worker = None
-
-        self.chat_history_dir = "chat_sessions"
-        os.makedirs(self.chat_history_dir, exist_ok=True)
-
-        self.current_session = None
-        self.messages = []
-
-        self.init_ui()
-        self.load_model()
-        self.load_sessions()
-
-    # ---------------- UI ----------------
-    def init_ui(self):
-        main_layout = QHBoxLayout(self)
-        splitter = QSplitter(Qt.Horizontal)
-
-        # ===== LEFT SIDE (Chat) =====
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-
-        title = QLabel("🤖 CyberArmor AI")
-        title.setStyleSheet("font-size:20px; font-weight:bold;")
-        left_layout.addWidget(title)
-
-        self.chat_area = QTextEdit()
-        self.chat_area.setReadOnly(True)
-        left_layout.addWidget(self.chat_area)
-
-        input_layout = QHBoxLayout()
-        self.input_box = QLineEdit()
-        self.input_box.setPlaceholderText("Ask something...")
-
-        self.send_btn = QPushButton("Send")
-
-        input_layout.addWidget(self.input_box)
-        input_layout.addWidget(self.send_btn)
-        left_layout.addLayout(input_layout)
-
-        # ===== RIGHT SIDE (Sessions) =====
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-
-        history_label = QLabel("🗂 Chat History")
-        history_label.setStyleSheet("font-weight:bold;")
-        right_layout.addWidget(history_label)
-
-        self.session_list = QListWidget()
-        right_layout.addWidget(self.session_list)
-
-        self.new_chat_btn = QPushButton("New Chat")
-        right_layout.addWidget(self.new_chat_btn)
-
-        splitter.addWidget(left_widget)
-        splitter.addWidget(right_widget)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-
-        main_layout.addWidget(splitter)
-
-        # Signals
-        self.send_btn.clicked.connect(self.ask)
-        self.input_box.returnPressed.connect(self.ask)
-        self.new_chat_btn.clicked.connect(self.new_chat)
-        self.session_list.itemClicked.connect(self.load_selected_session)
-
-    # ---------------- Load Model ----------------
-    def load_model(self):
+    def _load_model(self):
         if not GPT4ALL_AVAILABLE:
-            self.chat_area.append("Install GPT4All: pip install gpt4all")
-            self.send_btn.setEnabled(False)
-            return
-
+            self.chat_area.append("⚠  GPT4All not installed.\nRun: pip install gpt4all"); self.send_btn.setEnabled(False); return
         if not os.path.exists(self.model_path):
-            self.chat_area.append("Model file not found.")
-            self.send_btn.setEnabled(False)
-            return
-
+            self.chat_area.append(f"⚠  Model file not found at:\n{self.model_path}\n\nPlace your .gguf model file there."); self.send_btn.setEnabled(False); return
         try:
-            self.chat_area.append("Loading model...")
-            self.model = GPT4All(
-                self.model_path,
-                allow_download=False,
-                device="cpu"
-            )
-            self.chat_area.append("Model loaded successfully.\n")
+            self.chat_area.append("⏳  Loading AI model...")
+            self.model=GPT4All(self.model_path,allow_download=False,device="cpu")
+            self.chat_area.append("✅  CyberArmor AI ready!\n")
         except Exception as e:
-            self.chat_area.append(f"Model load failed: {e}")
-            self.send_btn.setEnabled(False)
+            self.chat_area.append(f"❌  Model load failed: {e}"); self.send_btn.setEnabled(False)
 
-    # ---------------- Ask ----------------
-    def ask(self):
-        question = self.input_box.text().strip()
-        if not question or not self.model:
-            return
+    def _ask(self):
+        q=self.input_box.text().strip()
+        if not q or not self.model: return
+        if not self.current_session: self._new_chat()
+        self.input_box.clear(); self.send_btn.setEnabled(False)
+        self.chat_area.append(f"\n👤 You: {q}")
+        self.messages.append({"role":"user","content":q})
+        prompt=(f"You are CyberArmor AI, a cybersecurity and Linux expert.\n"
+                f"Answer clearly and concisely.\n\nQuestion: {q}\nAnswer:")
+        self.chat_area.append("🤖 AI: ")
+        self.worker=AIWorker(self.model,prompt)
+        self.worker.token.connect(lambda t: self.chat_area.insertPlainText(t))
+        self.worker.finished.connect(self._done); self.worker.start()
 
-        if not self.current_session:
-            self.new_chat()
+    def _done(self):
+        text=self.chat_area.toPlainText(); ans=text.split("🤖 AI:")[-1].strip()
+        self.messages.append({"role":"assistant","content":ans})
+        self._save_session(); self.send_btn.setEnabled(True); self.chat_area.append("\n")
 
-        self.input_box.clear()
-        self.send_btn.setEnabled(False)
+    def _new_chat(self):
+        ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        safe=ts.replace(":","-")
+        self.current_session=f"chat_{safe}.json"; self.messages=[]; self.chat_area.clear()
+        self.session_list.addItem(f"Chat {ts}")
 
-        self.chat_area.append(f"\nYou: {question}")
-        self.messages.append({"role": "user", "content": question})
+    def _save_session(self):
+        if not self.current_session: return
+        path=os.path.join(self.chat_dir,self.current_session)
+        with open(path,"w",encoding="utf-8") as f: json.dump(self.messages,f,indent=4)
 
-        system_prompt = (
-            "You are CyberArmor AI.\n"
-            "You are a cybersecurity and Linux expert.\n"
-            "Answer clearly and briefly.\n\n"
-            f"User question: {question}\nAnswer:"
-        )
-
-        self.chat_area.append("AI: ")
-
-        self.worker = AIWorker(self.model, system_prompt)
-        self.worker.token.connect(self.stream_text)
-        self.worker.finished.connect(self.done)
-        self.worker.start()
-
-    def stream_text(self, text):
-        self.chat_area.insertPlainText(text)
-
-    def done(self):
-        full_text = self.chat_area.toPlainText()
-        answer = full_text.split("AI:")[-1].strip()
-
-        self.messages.append({"role": "assistant", "content": answer})
-        self.save_session()
-
-        self.send_btn.setEnabled(True)
-        self.chat_area.append("\n")
-
-    # ---------------- Sessions ----------------
-    def new_chat(self):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        safe_name = timestamp.replace(":", "-")
-
-        self.current_session = f"chat_{safe_name}.json"
-        self.messages = []
-        self.chat_area.clear()
-
-        # Show clean name without .json
-        self.session_list.addItem(f"Chat {timestamp}")
-
-    def save_session(self):
-        if not self.current_session:
-            return
-
-        path = os.path.join(self.chat_history_dir, self.current_session)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.messages, f, indent=4)
-
-    def load_sessions(self):
+    def _load_sessions(self):
         self.session_list.clear()
+        for fname in sorted(os.listdir(self.chat_dir),reverse=True):
+            if fname.endswith(".json"):
+                clean=fname.replace("chat_","").replace(".json","").replace("-",":")
+                self.session_list.addItem(f"Chat {clean}")
 
-        files = sorted(os.listdir(self.chat_history_dir), reverse=True)
+    def _load_session(self, item):
+        display=item.text().replace("Chat ",""); safe=display.replace(":","-")
+        path=os.path.join(self.chat_dir,f"chat_{safe}.json")
+        if not os.path.exists(path): return
+        with open(path,"r",encoding="utf-8") as f: self.messages=json.load(f)
+        self.current_session=f"chat_{safe}.json"; self.chat_area.clear()
+        for m in self.messages:
+            prefix="👤 You" if m["role"]=="user" else "🤖 AI"
+            self.chat_area.append(f"\n{prefix}: {m['content']}")
 
-        for file in files:
-            if file.endswith(".json"):
-                clean_name = file.replace("chat_", "").replace(".json", "")
-                clean_name = clean_name.replace("-", ":")
-                self.session_list.addItem(f"Chat {clean_name}")
+    def _export(self):
+        if not self.messages: QMessageBox.information(self,"Empty","No messages to export."); return
+        path,_=QFileDialog.getSaveFileName(self,"Export Chat",f"chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}","Text (*.txt);;JSON (*.json)")
+        if not path: return
+        if path.endswith(".json"):
+            with open(path,"w") as f: json.dump(self.messages,f,indent=4)
+        else:
+            with open(path,"w") as f:
+                for m in self.messages:
+                    role="You" if m["role"]=="user" else "AI"; f.write(f"{role}: {m['content']}\n\n")
+        QMessageBox.information(self,"Saved",f"✅ Chat saved:\n{path}")
 
-    def load_selected_session(self, item):
-        display_name = item.text().replace("Chat ", "")
-        safe_name = display_name.replace(":", "-")
-
-        file_name = f"chat_{safe_name}.json"
-        path = os.path.join(self.chat_history_dir, file_name)
-
-        if not os.path.exists(path):
-            return
-
-        with open(path, "r", encoding="utf-8") as f:
-            self.messages = json.load(f)
-
-        self.current_session = file_name
-        self.chat_area.clear()
-
-        for msg in self.messages:
-            if msg["role"] == "user":
-                self.chat_area.append(f"You: {msg['content']}")
-            else:
-                self.chat_area.append(f"AI: {msg['content']}")
-
-    # ---------------- Clean Close ----------------
-    def closeEvent(self, event):
-        if self.worker and self.worker.isRunning():
-            self.worker.quit()
-            self.worker.wait()
-        event.accept()
+    def closeEvent(self,e):
+        if self.worker and self.worker.isRunning(): self.worker.quit(); self.worker.wait()
+        e.accept()
